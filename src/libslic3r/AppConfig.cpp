@@ -492,6 +492,10 @@ void AppConfig::set_defaults()
         set_bool("is_split_compound", false);
     }
 
+    if (get("use_12h_time_format").empty()) {
+        set_bool("use_12h_time_format", false);
+    }
+
     // Remove legacy window positions/sizes
     erase("app", "main_frame_maximized");
     erase("app", "main_frame_pos");
