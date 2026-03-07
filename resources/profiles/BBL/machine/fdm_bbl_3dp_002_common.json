@@ -32,6 +32,7 @@
     "extruder_clearance_height_to_lid": "90",
     "extruder_clearance_height_to_rod": "38.70",
     "extruder_clearance_max_radius": "92",
+    "extruder_clearance_radius": "13",
     "extruder_colour": [
         "#018001",
         "#018001"
@@ -59,6 +60,10 @@
     "grab_length": [
         "0",
         "0"
+    ],
+    "extruder_max_nozzle_count": [
+        "1",
+        "1"
     ],
     "head_wrap_detect_zone": [],
     "hotend_cooling_rate": [
