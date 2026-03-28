@@ -169,6 +169,7 @@ typedef struct _sliced_info {
     std::vector<sliced_plate_info_t> sliced_plates;
     size_t prepare_time;
     size_t export_time;
+	float  layer_height{0.f};
     std::vector<std::string> upward_machines;
     std::vector<std::string> downward_machines;
 }sliced_info_t;
@@ -428,6 +429,7 @@ void record_exit_reson(std::string outputdir, int code, int plate_id, std::strin
         j["error_string"] = error_message;
         j["prepare_time"] = sliced_info.prepare_time;
         j["export_time"] = sliced_info.export_time;
+		j["layer_height"] = sliced_info.layer_height;
         for (size_t index = 0; index < sliced_info.sliced_plates.size(); index++)
         {
             json plate_json;
@@ -5885,6 +5887,8 @@ int CLI::run(int argc, char **argv)
                         DynamicPrintConfig new_print_config = m_print_config;
                         new_print_config.apply(*part_plate->config());
                         new_print_config.apply(m_extra_config, true);
+						if (m_print_config.option<ConfigOptionFloat>("layer_height"))
+                            sliced_info.layer_height = m_print_config.option<ConfigOptionFloat>("layer_height")->value;
                         if (new_extruder_count > 1) {
                             FilamentMapMode map_mode = fmmAutoForFlush;
                             if (new_print_config.option<ConfigOptionEnum<FilamentMapMode>>("filament_map_mode"))
