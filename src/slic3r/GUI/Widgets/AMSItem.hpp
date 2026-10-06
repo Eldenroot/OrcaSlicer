@@ -572,6 +572,10 @@ protected:
     void render(wxDC &dc);
     void render_lite_text(wxDC& dc);
     void render_generic_text(wxDC& dc);
+    // Orca: hex value(s) of the slot filament colour for the slot tooltip; empty when there is no real colour
+    wxString get_filament_color_tooltip() const;
+    // Orca: slot tooltip = filament name plus its colour, refreshed whenever the slot info changes
+    void update_tooltip();
     void doRender(wxDC& dc);
     void render_lite_lib(wxDC& dc);
     void render_generic_lib(wxDC& dc);

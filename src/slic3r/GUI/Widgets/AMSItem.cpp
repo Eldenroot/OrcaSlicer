@@ -1104,6 +1104,46 @@ void AMSLib::render(wxDC &dc)
     }
 }
 
+wxString AMSLib::get_filament_color_tooltip() const
+{
+    wxString color_text;
+    // External / virtual trays with no colour fall back to the white default
+    // (AMS_TRAY_DEFAULT_COL); report that as "no colour" instead of white.
+    const bool skip_default = (m_info.material_state == AMSCanType::AMS_CAN_TYPE_VIRTUAL);
+    auto append_color = [&color_text, skip_default](const wxColour& color) {
+        if (!color.IsOk()) return;
+        if (color.Alpha() == 0) {
+            if (!color_text.empty()) color_text += ", ";
+            color_text += _L("Transparent");
+            return;
+        }
+        if (skip_default && color == AMS_TRAY_DEFAULT_COL) return;
+        if (!color_text.empty()) color_text += ", ";
+        color_text += color.GetAsString(wxC2S_HTML_SYNTAX);
+    };
+    if (!m_info.material_cols.empty()) {
+        for (const wxColour& color : m_info.material_cols)
+            append_color(color);
+    } else {
+        append_color(m_info.material_colour);
+    }
+    return color_text;
+}
+
+void AMSLib::update_tooltip()
+{
+    // Without a filament name the slot is empty or unidentified: a colour-only tooltip would be misleading
+    wxString tooltip_text;
+    if (!m_info.material_name.empty()) {
+        tooltip_text = m_info.material_name;
+        const wxString color_text = get_filament_color_tooltip();
+        if (!color_text.empty())
+            tooltip_text += "\n" + _L("Color") + ": " + color_text;
+    }
+    if (GetToolTipText() != tooltip_text)
+        SetToolTip(tooltip_text); // an empty string removes the tooltip
+}
+
 void AMSLib::render_lite_text(wxDC& dc)
 {
     auto tmp_lib_colour = m_info.material_colour;
@@ -1771,6 +1811,7 @@ void AMSLib::UpdateInfo(Caninfo info, std::string ams_idx, bool refresh)
     m_info = info;
     m_ams_id = ams_idx;
     m_slot_id = info.can_id;
+    update_tooltip();
     if (refresh) Refresh();
 }
 
