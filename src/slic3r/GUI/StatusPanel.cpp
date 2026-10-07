@@ -1,4 +1,7 @@
 #include "StatusPanel.hpp"
+
+#include <algorithm>
+
 #include "I18N.hpp"
 #include "IPrinterAgent.hpp"
 #include "Widgets/Label.hpp"
@@ -674,6 +677,13 @@ void PrintingTaskPanel::create_panel(wxWindow* parent)
     m_gauge_progress = new ProgressBar(progress_lr_panel, wxID_ANY, 100, wxDefaultPosition, wxDefaultSize);
     m_gauge_progress->SetValue(0);
     m_gauge_progress->SetHeight(PROGRESSBAR_HEIGHT);
+    // The bar grows while a pause label has room reserved under it, so the panels around it re-layout
+    m_gauge_progress->Bind(EVT_PROGRESS_BAR_HEIGHT_CHANGED, [this, progress_lr_panel](wxCommandEvent &) {
+        progress_lr_panel->InvalidateBestSize();
+        progress_lr_panel->Layout();
+        InvalidateBestSize();
+        Layout();
+    });
 
     wxBoxSizer *bSizer_task_btn = new wxBoxSizer(wxHORIZONTAL);
 
@@ -774,10 +784,16 @@ void PrintingTaskPanel::create_panel(wxWindow* parent)
     m_staticText_layers->SetForegroundColour(wxColour(146, 146, 146));
     m_staticText_layers->Hide();
 
+    m_staticTextPauses = new wxStaticText(penel_text, wxID_ANY, _L("Pause") + ": " + NA_STR);
+    m_staticTextPauses->SetFont(wxFont(12, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, wxT("HarmonyOS Sans SC")));
+    m_staticTextPauses->SetForegroundColour(wxColour(146, 146, 146));
+    m_staticTextPauses->Hide();
+
     bSizer_text->Add(sizer_percent, 0, wxEXPAND, 0);
     bSizer_text->Add(sizer_percent_icon, 0, wxEXPAND, 0);
     bSizer_text->Add(0, 0, 1, wxEXPAND, 0);
-    bSizer_text->Add(m_staticText_layers, 0, wxALIGN_CENTER_VERTICAL | wxALL, 0);
+    bSizer_text->Add(m_staticTextPauses, 0, wxALIGN_CENTER_VERTICAL | wxALL, 0);
+    bSizer_text->Add(m_staticText_layers, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(20));
     bSizer_text->Add(0, 0, 0, wxLEFT, FromDIP(20));
     bSizer_text->Add(m_staticText_progress_left, 0, wxALIGN_CENTER_VERTICAL | wxALL, 0);
 
@@ -1283,6 +1299,54 @@ void PrintingTaskPanel::update_layers_num(bool show, wxString num)
         m_staticText_layers->Show(false);
         m_staticText_layers->SetLabelText(num);
     }
+}
+
+void PrintingTaskPanel::updatePauseNum(bool show, wxString num)
+{
+    if ((show == m_staticTextPauses->IsShown()) && (num == m_staticTextPauses->GetLabelText()))
+        return;
+
+    m_staticTextPauses->Show(show);
+    m_staticTextPauses->SetLabelText(num);
+    // The label's width changed or it appeared; re-layout its row
+    m_staticTextPauses->GetParent()->Layout();
+}
+
+void PrintingTaskPanel::updatePauseMarkers(const DevPrintPauseList *pauseList, int printRemainingTime)
+{
+    if (!pauseList || pauseList->m_points.empty()) {
+        m_gauge_progress->ClearMarkers();
+        return;
+    }
+
+    constexpr size_t MAX_VISIBLE_PAUSE_MARKERS = 5;
+    // Pause points report the print time left (minutes) when they happen; those not past yet fit in what is left now
+    const int printRemainingMinutes = printRemainingTime / 60;
+    std::vector<const DevPrintPausePoint *> upcomingPauses;
+    upcomingPauses.reserve(pauseList->m_points.size());
+    for (const auto &point : pauseList->m_points) {
+        if (point.m_remainingTime >= 0 && point.m_remainingTime <= printRemainingMinutes)
+            upcomingPauses.emplace_back(&point);
+    }
+    // Soonest first: the most print time left is the earliest in the print
+    std::sort(upcomingPauses.begin(), upcomingPauses.end(), [](const auto *lhs, const auto *rhs) {
+        if (lhs->m_remainingTime != rhs->m_remainingTime)
+            return lhs->m_remainingTime > rhs->m_remainingTime;
+        return lhs->m_pauseIndex < rhs->m_pauseIndex;
+    });
+    if (upcomingPauses.size() > MAX_VISIBLE_PAUSE_MARKERS)
+        upcomingPauses.resize(MAX_VISIBLE_PAUSE_MARKERS);
+
+    std::vector<ProgressBar::Marker> markers;
+    markers.reserve(upcomingPauses.size());
+    for (const DevPrintPausePoint *pausePoint : upcomingPauses) {
+        ProgressBar::Marker marker;
+        marker.m_position = pausePoint->m_progressPercent;
+        const int timeUntilPause = printRemainingTime - pausePoint->m_remainingTime * 60;
+        marker.m_label = wxString::Format("%s (-%s)", _L("Pause"), from_u8(get_bbl_monitor_time_dhm(timeUntilPause)));
+        markers.emplace_back(std::move(marker));
+    }
+    m_gauge_progress->SetMarkers(markers);
 }
 
 void PrintingTaskPanel::show_priting_use_info(bool show, wxString time /*= wxEmptyString*/, wxString weight /*= wxEmptyString*/)
@@ -3850,6 +3914,14 @@ void StatusPanel::update_subtask(MachineObject *obj)
     }
 
     m_project_task_panel->show_layers_num(obj->is_support_layer_num);
+    const auto &pauseList = obj->getPrintTaskInfo().getPauseList();
+    if (pauseList && pauseList->m_total > 0) {
+        m_project_task_panel->updatePauseNum(true, _L("Pause") + wxString::Format(": %d/%d", pauseList->getPassedCount(), pauseList->m_total));
+        m_project_task_panel->updatePauseMarkers(&*pauseList, obj->mc_left_time);
+    } else {
+        m_project_task_panel->updatePauseNum(false);
+        m_project_task_panel->updatePauseMarkers(nullptr);
+    }
 
     update_model_info();
     update_partskip_button(obj);
@@ -4118,6 +4190,8 @@ void StatusPanel::reset_printing_values()
     update_basic_print_data(false);
     m_project_task_panel->update_left_time(NA_STR);
     m_project_task_panel->update_layers_num(true, wxString::Format(_L("Layer: %s"), NA_STR));
+    m_project_task_panel->updatePauseNum(false);
+    m_project_task_panel->updatePauseMarkers(nullptr);
     update_calib_bitmap();
 
     task_thumbnail_state = ThumbnailState::PLACE_HOLDER;
