@@ -3,6 +3,7 @@
 
 #include "libslic3r/ProjectTask.hpp"
 #include "DeviceManager.hpp"
+#include "slic3r/GUI/DeviceCore/DevPrintTaskInfo.h"
 #include "MonitorPage.hpp"
 #include "SliceInfoPanel.hpp"
 #include "CameraPopup.hpp"
@@ -372,7 +373,7 @@ public:
     void update_thermal_remaining_time(MachineObject* obj);
     void update_progress_percent(wxString percent, wxString icon);
     void update_left_time(wxString time);
-    void update_left_time(int mc_left_time);
+    void update_left_time(int mc_left_time, bool is_printing_finished = false);
     void show_layers_num(bool show) { m_staticText_layers->Show(show); }
     void update_layers_num(bool show, wxString num = wxEmptyString);
     // Pause schedule reported by the printer: the "Pause: N/M" label and the pause ticks on the progress bar
@@ -800,7 +801,6 @@ protected:
     /* update apis */
     void update(MachineObject* obj);
     void show_printing_status(bool ctrl_area = true, bool temp_area = true);
-    void update_left_time(int mc_left_time);
     void update_basic_print_data(bool def = false);
     void update_model_info();
     void update_subtask(MachineObject* obj);

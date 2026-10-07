@@ -1266,7 +1266,7 @@ void PrintingTaskPanel::update_left_time(wxString time)
     m_staticText_progress_left->SetLabelText(time);
 }
 
-void PrintingTaskPanel::update_left_time(int mc_left_time)
+void PrintingTaskPanel::update_left_time(int mc_left_time, bool is_printing_finished)
 {
     // update gcode progress
     std::string left_time;
@@ -1290,7 +1290,11 @@ void PrintingTaskPanel::update_left_time(int mc_left_time)
     } catch (...) {
         ;
     }
-    if (!end_time.empty())
+    if (is_printing_finished)
+        end_time_text = _L("Finished");
+    else if (mc_left_time <= 0)
+        end_time_text = _L("Almost complete");
+    else if (!end_time.empty())
         end_time_text = wxString::Format("%s", end_time);
     else
         end_time_text = NA_STR;
@@ -4060,7 +4064,7 @@ void StatusPanel::update_subtask(MachineObject *obj)
             }
             m_project_task_panel->enable_partskip_button(obj, true);
             // update printing stage
-            m_project_task_panel->update_left_time(obj->mc_left_time);
+            m_project_task_panel->update_left_time(obj->mc_left_time, obj->is_printing_finished());
             // When the printer reports its pause schedule, the progress bar shows it; otherwise estimate the next pause
             m_project_task_panel->update_next_pause(pauseList && pauseList->m_total > 0 ? -1 : estimate_seconds_to_next_pause(obj));
             if (obj->subtask_) {

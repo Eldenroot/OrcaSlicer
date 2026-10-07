@@ -1,10 +1,16 @@
 #include "ProgressBar.hpp"
 #include <algorithm>
+#include <cstddef>
+#include <optional>
+#include <vector>
+#include <wx/brush.h>
+#include <wx/colour.h>
 #include <wx/dc.h>
 #include <wx/dcclient.h>
 #include <wx/dcgraph.h>
 #include <wx/event.h>
 #include <wx/gdicmn.h>
+#include <wx/pen.h>
 #include <wx/string.h>
 #include "Label.hpp"
 
