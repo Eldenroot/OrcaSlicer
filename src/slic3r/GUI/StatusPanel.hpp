@@ -318,6 +318,7 @@ private:
     wxStaticText * m_staticText_progress_end;
     wxStaticText*   m_staticText_layers;
     wxStaticText*   m_staticTextPauses{nullptr};
+    wxStaticText*   m_staticText_next_pause{nullptr};
     wxStaticText *  m_has_rated_prompt;
     wxStaticText *  m_request_failed_info;
     wxStaticBitmap* m_bitmap_thumbnail;
@@ -377,6 +378,8 @@ public:
     // Pause schedule reported by the printer: the "Pause: N/M" label and the pause ticks on the progress bar
     void updatePauseNum(bool show, wxString num = wxEmptyString);
     void updatePauseMarkers(const DevPrintPauseList *pauseList, int printRemainingTime = 0);
+    // "Pause in <time>" estimated from the open project; hidden for a time of 0 or less
+    void update_next_pause(int seconds_to_pause);
     void show_priting_use_info(bool show, wxString time = wxEmptyString, wxString weight = wxEmptyString);
     void show_profile_info(bool show, wxString profile = wxEmptyString);
     void set_thumbnail_img(const wxBitmap& bmp, const std::string& bmp_name);
