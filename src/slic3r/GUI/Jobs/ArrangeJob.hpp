@@ -48,7 +48,9 @@ class ArrangeJob : public Job
     void prepare_all();
 
     //BBS:prepare the items from current selected partplate
-    void prepare_partplate();
+    // With only_selection just the selected instances are moved; the other ones on the plate stay put
+    // and act as obstacles.
+    void prepare_partplate(bool only_selection = false);
     void prepare_wipe_tower();
 
     ArrangePolygon prepare_arrange_polygon(void* instance);
