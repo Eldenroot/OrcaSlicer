@@ -3733,11 +3733,6 @@ bool GLCanvas3D::handle_shortcut(const KeyChord& chord)
         break;
     case Shortcut::Orient:       post_event(SimpleEvent(EVT_GLCANVAS_ORIENT)); break;
     case Shortcut::OrientPlate:  post_event(SimpleEvent(EVT_GLCANVAS_ORIENT_PARTPLATE)); break;
-    case Shortcut::CenterSelection:
-        // Same action as the "Center" item of the object context menu
-        if (m_canvas_type == CanvasView3D && !painting && !m_selection.is_empty())
-            wxGetApp().plater()->center_selection();
-        break;
     case Shortcut::RotateSelectionLeft:  rotate_selection(0.25 * M_PI); break;
     case Shortcut::RotateSelectionRight: rotate_selection(-0.25 * M_PI); break;
     case Shortcut::MoveSelectionLeft:  move_selection(-Vec3d::UnitX()); break;

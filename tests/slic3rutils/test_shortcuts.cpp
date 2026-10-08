@@ -225,18 +225,6 @@ TEST_CASE("Lookups are scoped to the context of the key press", "[Shortcuts]")
     CHECK(registry.lookup(ShortcutContext::Painting, c) == Shortcut::PaintToolCircle);
 }
 
-TEST_CASE("Center selection is bound to Shift+C and leaves C to the cut gizmo", "[Shortcuts]")
-{
-    ShortcutRegistry registry;
-    const KeyChord   c{ 'C' };
-    const KeyChord   shift_c{ 'C', wxMOD_SHIFT };
-
-    CHECK(registry.lookup(ShortcutContext::Plater, shift_c) == Shortcut::CenterSelection);
-    CHECK(registry.lookup(ShortcutContext::Plater, c) == Shortcut::GizmoCut);
-    CHECK_FALSE(registry.lookup(ShortcutContext::Preview, shift_c).has_value());
-    CHECK_FALSE(registry.lookup(ShortcutContext::Painting, shift_c).has_value());
-}
-
 TEST_CASE("Stepping shortcuts match with Shift or Ctrl added to their binding", "[Shortcuts]")
 {
     ShortcutRegistry registry;

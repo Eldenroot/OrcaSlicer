@@ -2295,8 +2295,7 @@ void MenuFactory::append_menu_item_smooth_mesh(wxMenu *menu)
 
 void MenuFactory::append_menu_item_center(wxMenu* menu)
 {
-     const std::string accel = wxGetApp().shortcuts().accelerator(Shortcut::CenterSelection);
-     append_menu_item(menu, wxID_ANY, _L("Center") + (accel.empty() ? wxString() : "\t" + from_u8(accel)), "",
+     append_menu_item(menu, wxID_ANY, _L("Center") , "",
         [](wxCommandEvent&) {
             plater()->center_selection();
         }, "", nullptr,
