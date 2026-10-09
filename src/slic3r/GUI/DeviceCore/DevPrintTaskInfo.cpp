@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace Slic3r
@@ -67,6 +68,15 @@ int DevPrintPauseList::getPassedCount() const
 
 void DevPrintTaskInfo::parse(const nlohmann::json &printInfo)
 {
+    // The schedule belongs to one task: once the printer is idle or the task has ended, the next task must not
+    // inherit it (a printer may omit p_list for a task without pauses).
+    const auto state = printInfo.find("gcode_state");
+    if (state != printInfo.end() && state->is_string()) {
+        const std::string &gcodeState = state->get_ref<const std::string &>();
+        if (gcodeState == "IDLE" || gcodeState == "FINISH" || gcodeState == "FAILED")
+            m_pauseList.reset();
+    }
+
     const auto pauseListJson = printInfo.find("p_list");
     if (pauseListJson == printInfo.end())
         return;
