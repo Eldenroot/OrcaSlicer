@@ -69,6 +69,7 @@ protected:
     DECLARE_EVENT_TABLE()
 
     void paintEvent(wxPaintEvent &evt);
+    void mouseWheelEvent(wxMouseEvent &evt);
 
     wxSize DoGetBestSize() const override;
 
@@ -97,6 +98,7 @@ private:
     std::shared_ptr<wxURI> m_url;
     std::shared_ptr<wxURI> m_active_url;
     bool m_external = false;
+    double m_zoom = 1.0; // digital zoom of the live view, changed with the mouse wheel
     std::uint64_t m_last_PTS{0};
     std::chrono::system_clock::time_point m_last_PTS_expected;
     std::chrono::system_clock::time_point m_last_PTS_practical;

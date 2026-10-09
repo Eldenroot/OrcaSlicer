@@ -19,6 +19,7 @@
 #include <wx/mediactrl.h>
 #include <wx/string.h>
 #include <wx/image.h>
+#include <wx/math.h>
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/log.h>
@@ -37,6 +38,7 @@ BEGIN_EVENT_TABLE(wxMediaCtrl3, wxWindow)
 
 // catch paint events
 EVT_PAINT(wxMediaCtrl3::paintEvent)
+EVT_MOUSEWHEEL(wxMediaCtrl3::mouseWheelEvent)
 
 END_EVENT_TABLE()
 
@@ -73,6 +75,7 @@ void wxMediaCtrl3::Load(wxURI url)
         return;
     m_video_size = wxDefaultSize;
     m_error = 0;
+    m_zoom = 1.0;
     m_url.reset(new wxURI(url));
     m_cond.notify_all();
 }
@@ -95,6 +98,7 @@ void wxMediaCtrl3::Stop()
 {
     std::unique_lock<std::mutex> lk(m_mutex);
     m_url.reset();
+    m_zoom = 1.0;
     m_frame = wxImage(m_idle_image);
     NotifyStopped();
     m_cond.notify_all();
@@ -137,6 +141,7 @@ void wxMediaCtrl3::BeginExternalStream()
 {
     std::unique_lock<std::mutex> lk(m_mutex);
     m_external = true;
+    m_zoom = 1.0;
     m_url.reset();
     m_active_url.reset();
     m_video_size = wxDefaultSize;
@@ -149,6 +154,7 @@ void wxMediaCtrl3::EndExternalStream()
 {
     std::unique_lock<std::mutex> lk(m_mutex);
     m_external = false;
+    m_zoom = 1.0;
     m_url.reset();
     m_active_url.reset();
     m_video_size = wxDefaultSize;
@@ -213,20 +219,38 @@ void wxMediaCtrl3::paintEvent(wxPaintEvent &evt)
     auto size2 = m_frame.GetSize();
     if (size2.x != m_frame_size.x && size2.y == m_frame_size.y)
         size2.x = m_frame_size.x;
-    auto size3 = (size - size2) / 2;
-    if (size2.x != size.x && size2.y != size.y) {
-        double scale = 1.;
-        if (size.x * size2.y > size.y * size2.x) {
-            size3 = {size.x * size2.y / size.y, size2.y};
-            scale = double(size.y) / size2.y;
-        } else {
-            size3 = {size2.x, size.y * size2.x / size.x};
-            scale = double(size.x) / size2.x;
-        }
-        dc.SetUserScale(scale, scale);
-        size3 = (size3 - size2) / 2;
+    // Base "contain" fit scale, then the digital zoom of the live view on top of it.
+    // At m_zoom == 1 this draws exactly what the plain fitted, centred rendering does.
+    double scale = 1.;
+    if (size2.x != size.x && size2.y != size.y)
+        scale = (size.x * size2.y > size.y * size2.x) ? double(size.y) / size2.y : double(size.x) / size2.x;
+    const double effective_scale = scale * m_zoom;
+    dc.SetUserScale(effective_scale, effective_scale);
+    // Keep the image centred in the window; when zoomed in the overflow is cropped by the window
+    const int offset_x = wxRound(size.x / 2.0 / effective_scale - size2.x / 2.0);
+    const int offset_y = wxRound(size.y / 2.0 / effective_scale - size2.y / 2.0);
+    dc.DrawBitmap(m_frame, offset_x, offset_y);
+}
+
+// Mouse wheel zooms the live view in 10% steps between 1x (fit) and 5x, centred on the view
+void wxMediaCtrl3::mouseWheelEvent(wxMouseEvent &evt)
+{
+    const int rotation = evt.GetWheelRotation();
+    bool      live;
+    {
+        std::unique_lock<std::mutex> lk(m_mutex);
+        live = m_external || m_state == wxMEDIASTATE_PLAYING;
     }
-    dc.DrawBitmap(m_frame, size3.x, size3.y);
+    if (rotation == 0 || !live) {
+        evt.Skip();
+        return;
+    }
+
+    const double zoom = std::clamp(m_zoom * (rotation > 0 ? 1.1 : 1.0 / 1.1), 1.0, 5.0);
+    if (zoom != m_zoom) {
+        m_zoom = zoom;
+        Refresh();
+    }
 }
 
 void wxMediaCtrl3::DoSetSize(int x, int y, int width, int height, int sizeFlags)
