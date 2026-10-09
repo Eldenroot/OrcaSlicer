@@ -181,6 +181,7 @@ static const std::vector<std::pair<std::string, libvgcode::EViewType>>& view_typ
         { "layer_time_linear",            libvgcode::EViewType::LayerTimeLinear },
         { "layer_time_logarithmic",       libvgcode::EViewType::LayerTimeLogarithmic },
         { "fan_speed",                    libvgcode::EViewType::FanSpeed },
+        { "additional_fan_speed",         libvgcode::EViewType::AdditionalFanSpeed },
         { "temperature",                  libvgcode::EViewType::Temperature },
         { "pressure_advance",             libvgcode::EViewType::PressureAdvance },
     };

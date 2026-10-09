@@ -238,7 +238,7 @@ GCodeInputData convert(const Slic3r::GCodeProcessorResult& result, const std::ve
                     /* ORCA: Add Pressure Advance visualization support */ 0.0f, curr.pressure_advance,
                     /* ORCA: Add Acceleration visualization support */ curr.acceleration,
                     /* ORCA: Add Jerk visualization support */ curr.jerk,
-                    curr.additional_fan_speed };
+                    /* additional (AUX) fan speed */ curr.additional_fan_speed };
 #else
               const libvgcode::PathVertex vertex = { convert(prev.position), curr.height, curr.width, curr.feedrate, prev.actual_feedrate,
                     curr.mm3_per_mm, curr.fan_speed, curr.temperature, convert(curr.extrusion_role), curr_type,
@@ -247,7 +247,7 @@ GCodeInputData convert(const Slic3r::GCodeProcessorResult& result, const std::ve
                     /* ORCA: Add Pressure Advance visualization support */ 0.0f, curr.pressure_advance,
                     /* ORCA: Add Acceleration visualization support */ curr.acceleration,
                     /* ORCA: Add Jerk visualization support */ curr.jerk,
-                    curr.additional_fan_speed };
+                    /* additional (AUX) fan speed */ curr.additional_fan_speed };
 #endif // VGCODE_ENABLE_COG_AND_TOOL_MARKERS
                 ret.vertices.emplace_back(vertex);
             }
@@ -262,7 +262,7 @@ GCodeInputData convert(const Slic3r::GCodeProcessorResult& result, const std::ve
             /* ORCA: Add Pressure Advance visualization support */ 0.0f, curr.pressure_advance,
             /* ORCA: Add Acceleration visualization support */ curr.acceleration,
             /* ORCA: Add Jerk visualization support */ curr.jerk,
-                    curr.additional_fan_speed };
+            /* additional (AUX) fan speed */ curr.additional_fan_speed };
 #else
         const libvgcode::PathVertex vertex = { convert(curr.position), curr.height, curr.width, curr.feedrate, curr.actual_feedrate,
             curr.mm3_per_mm, curr.fan_speed, curr.temperature, convert(curr.extrusion_role), curr_type,
@@ -271,7 +271,7 @@ GCodeInputData convert(const Slic3r::GCodeProcessorResult& result, const std::ve
             /* ORCA: Add Pressure Advance visualization support */ 0.0f, curr.pressure_advance,
             /* ORCA: Add Acceleration visualization support */ curr.acceleration,
             /* ORCA: Add Jerk visualization support */ curr.jerk,
-                    curr.additional_fan_speed };
+            /* additional (AUX) fan speed */ curr.additional_fan_speed };
 #endif // VGCODE_ENABLE_COG_AND_TOOL_MARKERS
         ret.vertices.emplace_back(vertex);
     }
