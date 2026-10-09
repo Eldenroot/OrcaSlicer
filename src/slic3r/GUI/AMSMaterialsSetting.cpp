@@ -1232,7 +1232,7 @@ void AMSMaterialsSetting::Popup(wxString filament, wxString sn, wxString temp_mi
     }
 
     // Set the flag whether to open the filament setting dialog from the device page
-    m_comboBox_filament->SetClientData(new int(1));
+    m_select_from_printer = true;
 
     // The PA calibration history is only requested when the Calibration tab is visited.
     // Request it here as well, otherwise the K profile list stays on "Default" until then.
@@ -1246,6 +1246,7 @@ void AMSMaterialsSetting::Popup(wxString filament, wxString sn, wxString temp_mi
         if (cali_info.nozzle_diameter > 0) {
             CalibUtils::emit_get_PA_calib_infos(cali_info);
             m_pa_data_pending = true;
+            m_pa_pending_selection = selection_idx;
         }
     }
 
@@ -1276,7 +1277,8 @@ void AMSMaterialsSetting::TryRefreshPAProfiles()
         const wxString temp_min = m_input_nozzle_min->GetTextCtrl()->GetValue();
         const wxString temp_max = m_input_nozzle_max->GetTextCtrl()->GetValue();
 
-        m_comboBox_filament->SetClientData(new int(1));
+        // Keep the printer's profile only while the user is still on the filament shown at open
+        m_select_from_printer = (sel == m_pa_pending_selection);
         wxCommandEvent evt(wxEVT_COMBOBOX);
         evt.SetInt(sel);
         on_select_filament(evt);
@@ -1317,7 +1319,7 @@ int AMSMaterialsSetting::get_filament_variant_index(const Preset &filament, cons
 void AMSMaterialsSetting::on_select_filament(wxCommandEvent &evt)
 {
     // Get the flag whether to open the filament setting dialog from the device page
-    int* from_printer = static_cast<int*>(m_comboBox_filament->GetClientData());
+    const bool from_printer = m_select_from_printer;
 
     m_filament_type = "";
     PresetBundle* preset_bundle = wxGetApp().preset_bundle;
@@ -1400,7 +1402,7 @@ void AMSMaterialsSetting::on_select_filament(wxCommandEvent &evt)
         m_comboBox_cali_result->SetValue(wxEmptyString);
         m_input_k_val->GetTextCtrl()->SetValue(wxEmptyString);
         m_input_n_val->GetTextCtrl()->SetValue(wxEmptyString);
-        m_comboBox_filament->SetClientData(new int(0));
+        m_select_from_printer = false;
         return;
     }
     else {
@@ -1483,7 +1485,7 @@ void AMSMaterialsSetting::on_select_filament(wxCommandEvent &evt)
 
         m_comboBox_cali_result->Set(items);
         if (ams_id == VIRTUAL_TRAY_MAIN_ID || ams_id == VIRTUAL_TRAY_DEPUTY_ID) {
-            if (from_printer && (*from_printer == 1)) {
+            if (from_printer) {
                 for (auto slot : obj->vt_slot) {
                     if (slot.id == std::to_string(ams_id))
                         cali_select_idx = CalibUtils::get_selected_calib_idx(m_pa_profile_items, slot.cali_idx);
@@ -1500,7 +1502,7 @@ void AMSMaterialsSetting::on_select_filament(wxCommandEvent &evt)
             }
         }
         else {
-            if (from_printer && (*from_printer == 1)) {
+            if (from_printer) {
                 DevAmsTray* selected_tray = this->obj->GetFilaSystem()->GetAmsTray(std::to_string(ams_id), std::to_string(slot_id));
                 if (!selected_tray)
                 {
@@ -1542,7 +1544,7 @@ void AMSMaterialsSetting::on_select_filament(wxCommandEvent &evt)
         }
     }
 
-    m_comboBox_filament->SetClientData(new int(0));
+    m_select_from_printer = false;
 }
 
 void AMSMaterialsSetting::on_dpi_changed(const wxRect &suggested_rect)
