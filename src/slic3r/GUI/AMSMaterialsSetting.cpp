@@ -1244,7 +1244,9 @@ void AMSMaterialsSetting::Popup(wxString filament, wxString sn, wxString temp_mi
         cali_info.use_extruder_id        = false;
         cali_info.use_nozzle_volume_type = false;
         if (cali_info.nozzle_diameter > 0) {
-            CalibUtils::emit_get_PA_calib_infos(cali_info);
+            // StatusPanel::update_ams() sends the same request when cali_version changed, don't duplicate it
+            if (obj->last_cali_version == obj->cali_version)
+                CalibUtils::emit_get_PA_calib_infos(cali_info);
             m_pa_data_pending = true;
             m_pa_pending_selection = selection_idx;
         }
@@ -1254,6 +1256,7 @@ void AMSMaterialsSetting::Popup(wxString filament, wxString sn, wxString temp_mi
     Layout();
     Fit();
     ShowModal();
+    m_pa_data_pending = false;
 }
 
 void AMSMaterialsSetting::post_select_event(int index) {
