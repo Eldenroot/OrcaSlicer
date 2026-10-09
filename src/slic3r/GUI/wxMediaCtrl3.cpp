@@ -63,6 +63,8 @@ wxMediaCtrl3::wxMediaCtrl3(wxWindow *parent)
 
 wxMediaCtrl3::~wxMediaCtrl3()
 {
+    if (HasCapture()) // a drag may still be in progress
+        ReleaseMouse();
     {
         std::unique_lock<std::mutex> lk(m_mutex);
         m_url.reset(new wxURI);
