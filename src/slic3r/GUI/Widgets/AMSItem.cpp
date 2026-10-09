@@ -112,6 +112,7 @@ bool AMSinfo::parse_ams_info(MachineObject *obj, DevAms *ams, bool remain_flag, 
                 } else {
                     // set to white by default
                     info.material_colour = AMS_TRAY_DEFAULT_COL;
+                    info.material_colour_unset = true;
                 }
 
                 for (std::string cols:it->second->cols) {
@@ -186,6 +187,7 @@ void AMSinfo::parse_ext_info(MachineObject* obj, DevAmsTray tray) {
         else {
             // set to white by default
             info.material_colour = AMS_TRAY_DEFAULT_COL;
+            info.material_colour_unset = true;
         }
 
         for (std::string cols : tray.cols) {
@@ -1107,17 +1109,17 @@ void AMSLib::render(wxDC &dc)
 wxString AMSLib::get_filament_color_tooltip() const
 {
     wxString color_text;
-    // External / virtual trays with no colour fall back to the white default
-    // (AMS_TRAY_DEFAULT_COL); report that as "no colour" instead of white.
-    const bool skip_default = (m_info.material_state == AMSCanType::AMS_CAN_TYPE_VIRTUAL);
-    auto append_color = [&color_text, skip_default](const wxColour& color) {
+    // A slot whose printer reported no colour only carries the white placeholder: report no colour
+    // instead of white. A genuinely white filament still shows its value.
+    if (m_info.material_colour_unset && m_info.material_cols.empty())
+        return color_text;
+    auto append_color = [&color_text](const wxColour& color) {
         if (!color.IsOk()) return;
         if (color.Alpha() == 0) {
             if (!color_text.empty()) color_text += ", ";
             color_text += _L("Transparent");
             return;
         }
-        if (skip_default && color == AMS_TRAY_DEFAULT_COL) return;
         if (!color_text.empty()) color_text += ", ";
         color_text += color.GetAsString(wxC2S_HTML_SYNTAX);
     };

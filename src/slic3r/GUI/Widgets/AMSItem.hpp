@@ -199,6 +199,7 @@ struct Caninfo
     std::string     can_id;
     wxString        material_name;
     wxColour        material_colour = {*wxWHITE};
+    bool            material_colour_unset = false; // the printer reported no colour; material_colour is only the white placeholder
     AMSCanType      material_state;
     int             ctype=0;
     int             material_remain = 100;
@@ -214,6 +215,7 @@ public:
         if (can_id == other.can_id &&
             material_name == other.material_name &&
             material_colour == other.material_colour &&
+            material_colour_unset == other.material_colour_unset &&
             material_state == other.material_state &&
             ctype == other.ctype &&
             material_remain == other.material_remain &&
