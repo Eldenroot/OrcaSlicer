@@ -1234,10 +1234,39 @@ void AMSMaterialsSetting::Popup(wxString filament, wxString sn, wxString temp_mi
     // Set the flag whether to open the filament setting dialog from the device page
     m_comboBox_filament->SetClientData(new int(1));
 
+    // The PA calibration history is only requested when the Calibration tab is visited.
+    // Request it here as well, otherwise the K profile list stays on "Default" until then.
+    if (obj->cali_version >= 0 && !obj->has_get_pa_calib_tab) {
+        const int extruder_id = obj->get_extruder_id_by_ams_id(std::to_string(ams_id));
+        PACalibExtruderInfo cali_info;
+        cali_info.nozzle_diameter        = obj->GetExtderSystem()->GetNozzleDiameter(extruder_id);
+        cali_info.use_extruder_id        = false;
+        cali_info.use_nozzle_volume_type = false;
+        CalibUtils::emit_get_PA_calib_infos(cali_info);
+        m_pa_data_pending = true;
+    } else {
+        m_pa_data_pending = false;
+    }
+
     update();
     Layout();
     Fit();
     ShowModal();
+}
+
+void AMSMaterialsSetting::TryRefreshPAProfiles()
+{
+    if (!m_pa_data_pending || !obj || !obj->has_get_pa_calib_tab)
+        return;
+
+    m_pa_data_pending = false;
+
+    // Re-run the filament selection handler, which rebuilds the K profile dropdown
+    const int sel = m_comboBox_filament->GetSelection();
+    if (sel >= 0) {
+        m_comboBox_filament->SetClientData(new int(1));
+        post_select_event(sel);
+    }
 }
 
 void AMSMaterialsSetting::post_select_event(int index) {
