@@ -1236,22 +1236,30 @@ void AMSMaterialsSetting::Popup(wxString filament, wxString sn, wxString temp_mi
 
     // The PA calibration history is only requested when the Calibration tab is visited.
     // Request it here as well, otherwise the K profile list stays on "Default" until then.
+    m_pa_data_pending = false;
     if (obj->cali_version >= 0 && !obj->has_get_pa_calib_tab) {
         const int extruder_id = obj->get_extruder_id_by_ams_id(std::to_string(ams_id));
         PACalibExtruderInfo cali_info;
         cali_info.nozzle_diameter        = obj->GetExtderSystem()->GetNozzleDiameter(extruder_id);
         cali_info.use_extruder_id        = false;
         cali_info.use_nozzle_volume_type = false;
-        CalibUtils::emit_get_PA_calib_infos(cali_info);
-        m_pa_data_pending = true;
-    } else {
-        m_pa_data_pending = false;
+        if (cali_info.nozzle_diameter > 0) {
+            CalibUtils::emit_get_PA_calib_infos(cali_info);
+            m_pa_data_pending = true;
+        }
     }
 
     update();
     Layout();
     Fit();
     ShowModal();
+}
+
+void AMSMaterialsSetting::post_select_event(int index) {
+    wxCommandEvent event(wxEVT_COMBOBOX);
+    event.SetInt(index);
+    event.SetEventObject(m_comboBox_filament);
+    wxPostEvent(m_comboBox_filament, event);
 }
 
 void AMSMaterialsSetting::TryRefreshPAProfiles()
@@ -1261,19 +1269,21 @@ void AMSMaterialsSetting::TryRefreshPAProfiles()
 
     m_pa_data_pending = false;
 
-    // Re-run the filament selection handler, which rebuilds the K profile dropdown
+    // Re-run the filament selection handler, which rebuilds the K profile dropdown.
+    // It also rewrites the nozzle temperature fields, so keep what the user may have typed.
     const int sel = m_comboBox_filament->GetSelection();
     if (sel >= 0) {
-        m_comboBox_filament->SetClientData(new int(1));
-        post_select_event(sel);
-    }
-}
+        const wxString temp_min = m_input_nozzle_min->GetTextCtrl()->GetValue();
+        const wxString temp_max = m_input_nozzle_max->GetTextCtrl()->GetValue();
 
-void AMSMaterialsSetting::post_select_event(int index) {
-    wxCommandEvent event(wxEVT_COMBOBOX);
-    event.SetInt(index);
-    event.SetEventObject(m_comboBox_filament);
-    wxPostEvent(m_comboBox_filament, event);
+        m_comboBox_filament->SetClientData(new int(1));
+        wxCommandEvent evt(wxEVT_COMBOBOX);
+        evt.SetInt(sel);
+        on_select_filament(evt);
+
+        m_input_nozzle_min->GetTextCtrl()->SetValue(temp_min);
+        m_input_nozzle_max->GetTextCtrl()->SetValue(temp_max);
+    }
 }
 
 void AMSMaterialsSetting::on_select_cali_result(wxCommandEvent &evt)
