@@ -27,8 +27,6 @@
 
 #include "test_utils.hpp"
 
-using namespace std;
-
 namespace Slic3r { namespace Test {
 
 const std::unordered_map<TestMesh, const char*, TestMeshHash> mesh_names {
@@ -459,7 +457,10 @@ int role_passes(const std::string &gcode, const std::string &role)
     bool in_role = false;
     GCodeReader reader;
     reader.parse_buffer(gcode, [&](GCodeReader &self, const GCodeReader::GCodeLine &line) {
-        if (! line.extruding(self)) return;
+        // E-only unretraction moves have positive E but do not lay down material. Ignoring
+        // them keeps a role pass contiguous across travel/retraction bookkeeping.
+        if (! line.extruding(self) || (line.dist_XY(self) <= EPSILON && std::abs(line.dist_Z(self)) <= EPSILON))
+            return;
         const bool is_role = line.comment().find(role) != std::string_view::npos;
         if (is_role && ! in_role) ++passes;
         in_role = is_role;
