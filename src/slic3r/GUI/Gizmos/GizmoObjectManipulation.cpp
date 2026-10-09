@@ -604,7 +604,7 @@ void GizmoObjectManipulation::drop_to_bed()
     // Drop along the global Z axis regardless of the coordinate system shown in the panel.
     selection.translate(-min_z * Vec3d::UnitZ(), transformation_type);
 
-    wxGetApp().plater()->take_snapshot(_u8L("Drop to bed"), UndoRedo::SnapshotType::GizmoAction);
+    wxGetApp().plater()->take_snapshot(_u8L("Drop to Bed"), UndoRedo::SnapshotType::GizmoAction);
     m_glcanvas.do_move("");
 
     UpdateAndShow(true);
@@ -925,7 +925,7 @@ void GizmoObjectManipulation::do_render_move_window(ImGuiWrapper *imgui_wrapper,
     }
     // the init position values are not zero, won't add reset button
 
-    if (m_show_drop_to_bed && imgui_wrapper->button(_L("Drop to bed")))
+    if (m_show_drop_to_bed && imgui_wrapper->button(_L("Drop to Bed")))
         drop_to_bed();
 
     // send focus to m_glcanvas
