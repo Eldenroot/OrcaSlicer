@@ -72,10 +72,12 @@ protected:
     void mouseWheelEvent(wxMouseEvent &evt);
     void mouseLeftDown(wxMouseEvent &evt);
     void mouseLeftUp(wxMouseEvent &evt);
+    void mouseDoubleClick(wxMouseEvent &evt);
     void mouseMotion(wxMouseEvent &evt);
     void mouseCaptureLost(wxMouseCaptureLostEvent &evt);
 
     static double fit_scale(wxSize const &size, wxSize const &frame);
+    static double max_zoom(double fit);
     static void   clamp_pan(double &pan_x, double &pan_y, wxSize const &size, wxSize const &frame, double effective_scale);
     void          reset_view();
     bool          live_frame_size(wxSize &frame);

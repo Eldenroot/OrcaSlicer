@@ -41,6 +41,7 @@ BEGIN_EVENT_TABLE(wxMediaCtrl3, wxWindow)
 EVT_PAINT(wxMediaCtrl3::paintEvent)
 EVT_MOUSEWHEEL(wxMediaCtrl3::mouseWheelEvent)
 EVT_LEFT_DOWN(wxMediaCtrl3::mouseLeftDown)
+EVT_LEFT_DCLICK(wxMediaCtrl3::mouseDoubleClick)
 EVT_LEFT_UP(wxMediaCtrl3::mouseLeftUp)
 EVT_MOTION(wxMediaCtrl3::mouseMotion)
 EVT_MOUSE_CAPTURE_LOST(wxMediaCtrl3::mouseCaptureLost)
@@ -226,7 +227,9 @@ void wxMediaCtrl3::paintEvent(wxPaintEvent &evt)
         size2.x = m_frame_size.x;
     // Base "contain" fit scale, then the digital zoom of the live view on top of it.
     // At m_zoom == 1 this draws exactly what the plain fitted, centred rendering does.
-    const double effective_scale = fit_scale(size, size2) * m_zoom;
+    const double fit = fit_scale(size, size2);
+    m_zoom           = std::min(m_zoom, max_zoom(fit)); // the window may have grown since the zoom was set
+    const double effective_scale = fit * m_zoom;
     if ((m_zoom > 1.0) != m_zoomed_cursor) { // a hand while the image can be dragged
         m_zoomed_cursor = m_zoom > 1.0;
         SetCursor(m_zoomed_cursor ? wxCursor(wxCURSOR_HAND) : wxNullCursor);
@@ -258,6 +261,16 @@ void wxMediaCtrl3::clamp_pan(double &pan_x, double &pan_y, wxSize const &size, w
     pan_y = std::clamp(pan_y, -max_y, max_y);
 }
 
+// Highest zoom that is still worth it: beyond a few screen pixels per video pixel the image only gets blockier.
+// It follows from the video resolution and the window size, so a large video in a small window can be zoomed further.
+double wxMediaCtrl3::max_zoom(double fit)
+{
+    constexpr double max_screen_pixels_per_video_pixel = 3.0;
+    constexpr double min_limit = 2.0;  // zoom stays available even when the window is already larger than the video
+    constexpr double max_limit = 16.0;
+    return std::clamp(max_screen_pixels_per_video_pixel / fit, min_limit, max_limit);
+}
+
 void wxMediaCtrl3::reset_view()
 {
     m_zoom      = 1.0;
@@ -278,7 +291,7 @@ bool wxMediaCtrl3::live_frame_size(wxSize &frame)
     return true;
 }
 
-// The mouse wheel zooms the live view in 10% steps between 1x (fit) and 5x, keeping the point under the cursor in place
+// The mouse wheel zooms the live view in 10% steps from 1x (fit) up to max_zoom(), keeping the point under the cursor in place
 void wxMediaCtrl3::mouseWheelEvent(wxMouseEvent &evt)
 {
     wxSize frame;
@@ -289,7 +302,8 @@ void wxMediaCtrl3::mouseWheelEvent(wxMouseEvent &evt)
 
     const wxSize size     = GetSize();
     const double old_zoom = m_zoom;
-    const double new_zoom = std::clamp(old_zoom * (evt.GetWheelRotation() > 0 ? 1.1 : 1.0 / 1.1), 1.0, 5.0);
+    const double fit      = fit_scale(size, frame);
+    const double new_zoom = std::clamp(old_zoom * (evt.GetWheelRotation() > 0 ? 1.1 : 1.0 / 1.1), 1.0, max_zoom(fit));
     if (new_zoom == old_zoom)
         return;
 
@@ -300,8 +314,18 @@ void wxMediaCtrl3::mouseWheelEvent(wxMouseEvent &evt)
     m_pan_x = dx - (dx - m_pan_x) * ratio;
     m_pan_y = dy - (dy - m_pan_y) * ratio;
     m_zoom  = new_zoom;
-    clamp_pan(m_pan_x, m_pan_y, size, frame, fit_scale(size, frame) * m_zoom);
+    clamp_pan(m_pan_x, m_pan_y, size, frame, fit * m_zoom);
     Refresh();
+}
+
+// Double click puts the view back to the fitted, centred image
+void wxMediaCtrl3::mouseDoubleClick(wxMouseEvent &evt)
+{
+    if (m_zoom > 1.0) {
+        reset_view();
+        Refresh();
+    }
+    evt.Skip();
 }
 
 // Dragging with the left button moves the zoomed image
