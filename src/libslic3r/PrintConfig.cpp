@@ -2229,7 +2229,8 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Air purification");
     def->tooltip = L("Purify the chamber air when the print finishes. \"Follow printer setting\" leaves the printer's own setting unchanged. "
                      "When filaments on the plate disagree, Exhaust wins over Internal circulation, which wins over Off. "
-                     "On a printer without a chamber exhaust duct, Exhaust falls back to Internal circulation.");
+                     "On a printer without a chamber exhaust duct, Exhaust falls back to Internal circulation. "
+                     "The chosen mode is written to the printer's own air purification setting when the print is sent and stays in effect for later prints until it is changed.");
     def->enum_keys_map = &ConfigOptionEnum<PurifyAirAtPrintEnd>::get_enum_values();
     def->enum_values.emplace_back("follow_printer");
     def->enum_values.emplace_back("off");
