@@ -70,6 +70,15 @@ protected:
 
     void paintEvent(wxPaintEvent &evt);
     void mouseWheelEvent(wxMouseEvent &evt);
+    void mouseLeftDown(wxMouseEvent &evt);
+    void mouseLeftUp(wxMouseEvent &evt);
+    void mouseMotion(wxMouseEvent &evt);
+    void mouseCaptureLost(wxMouseCaptureLostEvent &evt);
+
+    static double fit_scale(wxSize const &size, wxSize const &frame);
+    static void   clamp_pan(double &pan_x, double &pan_y, wxSize const &size, wxSize const &frame, double effective_scale);
+    void          reset_view();
+    bool          live_frame_size(wxSize &frame);
 
     wxSize DoGetBestSize() const override;
 
@@ -99,6 +108,11 @@ private:
     std::shared_ptr<wxURI> m_active_url;
     bool m_external = false;
     double m_zoom = 1.0; // digital zoom of the live view, changed with the mouse wheel
+    double m_pan_x = 0.0; // offset of the zoomed image from the window centre in window pixels, changed by dragging
+    double m_pan_y = 0.0;
+    bool   m_dragging = false;
+    bool   m_zoomed_cursor = false;
+    wxPoint m_drag_last;
     std::uint64_t m_last_PTS{0};
     std::chrono::system_clock::time_point m_last_PTS_expected;
     std::chrono::system_clock::time_point m_last_PTS_practical;
