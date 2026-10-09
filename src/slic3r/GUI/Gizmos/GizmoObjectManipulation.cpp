@@ -925,7 +925,7 @@ void GizmoObjectManipulation::do_render_move_window(ImGuiWrapper *imgui_wrapper,
     }
     // the init position values are not zero, won't add reset button
 
-    if (m_show_drop_to_bed && imgui_wrapper->button(_L("Drop to Bed")))
+    if (m_show_drop_to_bed && imgui_wrapper->button(_L("Drop to Bed"), _L("Move the selection along Z so that its lowest point touches the bed.")))
         drop_to_bed();
 
     // send focus to m_glcanvas
