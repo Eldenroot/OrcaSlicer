@@ -792,8 +792,10 @@ std::string CoolingBuffer::apply_layer_cooldown(
             supp_interface_fan_control  = false;
             ironing_fan_speed           = initial_layer_fan_speed;
             ironing_fan_control         = false;
-            // additional_fan_speed_new is left at its configured value (auxiliary fan is independent of the
-            // part-cooling override).
+            // The auxiliary fan is independent of the part-cooling override, but it still starts the same linear
+            // ramp (1 / full_fan_speed_layer of its configured speed) so it does not drop after the first layer.
+            if (full_fan_speed_layer > 1)
+                additional_fan_speed_new = std::clamp(int(float(additional_fan_speed_new) / float(full_fan_speed_layer) + 0.5f), 0, 255);
         } else if (int(layer_id) >= close_fan_the_first_x_layers) {
             float   fan_max_speed             = m_config.fan_max_speed.get_at(config_index);
             float slow_down_layer_time = float(EXTRUDER_CONFIG(slow_down_layer_time));
@@ -831,6 +833,11 @@ std::string CoolingBuffer::apply_layer_cooldown(
                     fan_speed_new    = std::clamp(int(float(fan_speed_new) * factor + 0.5f), 0, 255);
                     overhang_fan_speed = std::clamp(int(float(overhang_fan_speed) * factor + 0.5f), 0, 255);
                 }
+                // The auxiliary fan follows the same linear ramp as the part cooling fan: it rises from
+                // close_fan_the_first_x_layers to full_fan_speed_layer instead of jumping to its full speed.
+                // The first-layer override above does not apply to it, so the ramp is anchored at zero.
+                const float aux_factor = float(int(layer_id + 1) - close_fan_the_first_x_layers) / float(full_fan_speed_layer - close_fan_the_first_x_layers);
+                additional_fan_speed_new = std::clamp(int(float(additional_fan_speed_new) * aux_factor + 0.5f), 0, 255);
             }
             supp_interface_fan_speed = EXTRUDER_CONFIG(support_material_interface_fan_speed);
             supp_interface_fan_control = supp_interface_fan_speed >= 0;
