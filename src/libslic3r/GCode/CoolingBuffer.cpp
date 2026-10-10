@@ -760,6 +760,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
         float fan_speed_new = EXTRUDER_CONFIG(reduce_fan_stop_start_freq) ? fan_min_speed : 0;
         //BBS
         int additional_fan_speed_new = m_config.additional_cooling_fan_speed.get_at(config_index);
+        const bool additional_fan_linear_ramp = EXTRUDER_CONFIG(additional_cooling_fan_linear_ramp);
         int close_fan_the_first_x_layers = EXTRUDER_CONFIG(close_fan_the_first_x_layers);
         // Is the fan speed ramp enabled?
         int full_fan_speed_layer = EXTRUDER_CONFIG(full_fan_speed_layer);
@@ -794,7 +795,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
             ironing_fan_control         = false;
             // The auxiliary fan is independent of the part-cooling override, but it still starts the same linear
             // ramp (1 / full_fan_speed_layer of its configured speed) so it does not drop after the first layer.
-            if (full_fan_speed_layer > 1)
+            if (additional_fan_linear_ramp && full_fan_speed_layer > 1)
                 additional_fan_speed_new = std::clamp(int(float(additional_fan_speed_new) / float(full_fan_speed_layer) + 0.5f), 0, 255);
         } else if (int(layer_id) >= close_fan_the_first_x_layers) {
             float   fan_max_speed             = m_config.fan_max_speed.get_at(config_index);
@@ -836,8 +837,10 @@ std::string CoolingBuffer::apply_layer_cooldown(
                 // The auxiliary fan follows the same linear ramp as the part cooling fan: it rises from
                 // close_fan_the_first_x_layers to full_fan_speed_layer instead of jumping to its full speed.
                 // The first-layer override above does not apply to it, so the ramp is anchored at zero.
-                const float aux_factor = float(int(layer_id + 1) - close_fan_the_first_x_layers) / float(full_fan_speed_layer - close_fan_the_first_x_layers);
-                additional_fan_speed_new = std::clamp(int(float(additional_fan_speed_new) * aux_factor + 0.5f), 0, 255);
+                if (additional_fan_linear_ramp) {
+                    const float aux_factor = float(int(layer_id + 1) - close_fan_the_first_x_layers) / float(full_fan_speed_layer - close_fan_the_first_x_layers);
+                    additional_fan_speed_new = std::clamp(int(float(additional_fan_speed_new) * aux_factor + 0.5f), 0, 255);
+                }
             }
             supp_interface_fan_speed = EXTRUDER_CONFIG(support_material_interface_fan_speed);
             supp_interface_fan_control = supp_interface_fan_speed >= 0;
