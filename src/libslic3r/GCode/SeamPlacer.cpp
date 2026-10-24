@@ -29,6 +29,7 @@
 #include <memory>
 #include <random>
 #include <algorithm>
+#include <limits>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -444,6 +445,7 @@ Polygons extract_perimeter_polygons(const Layer *layer, std::vector<const LayerR
   for (const LayerRegion *layer_region : layer->regions()) {
     for (const ExtrusionEntity *ex_entity : layer_region->perimeters.entities) {
       if (ex_entity->is_collection()) { //collection of inner, outer, and overhang perimeters
+        const size_t collection_begin = polygons.size(); // The fallback below applies per collection, not per layer.
         for (const ExtrusionEntity *perimeter : static_cast<const ExtrusionEntityCollection*>(ex_entity)->entities) {
           ExtrusionRole role = perimeter->role();
           if (perimeter->is_loop()) {
@@ -452,6 +454,9 @@ Polygons extract_perimeter_polygons(const Layer *layer, std::vector<const LayerR
                 role = ExtrusionRole::erExternalPerimeter;
               }
             }
+            // A fully overhanging outer loop has no external paths but keeps inset_idx 0.
+            if (perimeter->inset_idx == 0)
+              role = ExtrusionRole::erExternalPerimeter;
           }
 
           if (role == ExtrusionRole::erExternalPerimeter) {
@@ -461,7 +466,7 @@ Polygons extract_perimeter_polygons(const Layer *layer, std::vector<const LayerR
             corresponding_regions_out.push_back(layer_region);
           }
         }
-        if (polygons.empty()) {
+        if (polygons.size() == collection_begin) {
           Points p;
           ex_entity->collect_points(p);
           polygons.emplace_back(std::move(p));
@@ -1207,21 +1212,21 @@ std::optional<std::pair<size_t, size_t>> SeamPlacer::find_next_seam_in_layer(
     const size_t layer_idx, const float max_distance,
     const SeamPlacerImpl::SeamComparator &comparator) const {
   using namespace SeamPlacerImpl;
-  std::vector<size_t> nearby_points_indices = find_nearby_points(*layers[layer_idx].points_tree, projected_position,
-                                                                 max_distance);
-
-  if (nearby_points_indices.empty()) {
-    return {};
-  }
-
-  size_t best_nearby_point_index = nearby_points_indices[0];
-  size_t nearest_point_index = nearby_points_indices[0];
-
-  // Now find best nearby point, nearest point, and corresponding indices
-  for (const size_t &nearby_point_index : nearby_points_indices) {
+  // Find the best nearby point and the nearest one. A layer of a fine relief has tens of thousands of candidates within
+  // the radius, so they are looked at as the search finds them rather than collected into a vector first.
+  constexpr size_t none = std::numeric_limits<size_t>::max();
+  size_t best_nearby_point_index = none;
+  size_t nearest_point_index = none;
+  visit_nearby_points(*layers[layer_idx].points_tree, projected_position, max_distance,
+                      [&layers, &comparator, &projected_position, layer_idx, &best_nearby_point_index, &nearest_point_index]
+                      (size_t nearby_point_index) {
+    if (best_nearby_point_index == none) {
+      // The first point found starts both, as the first of the collected ones did.
+      best_nearby_point_index = nearest_point_index = nearby_point_index;
+    }
     const SeamCandidate &point = layers[layer_idx].points[nearby_point_index];
     if (point.perimeter.finalized) {
-      continue; // skip over finalized perimeters, try to find some that is not finalized
+      return; // skip over finalized perimeters, try to find some that is not finalized
     }
     if (comparator.is_first_better(point, layers[layer_idx].points[best_nearby_point_index],
                                    projected_position.head<2>())
@@ -1233,6 +1238,10 @@ std::optional<std::pair<size_t, size_t>> SeamPlacer::find_next_seam_in_layer(
         || layers[layer_idx].points[nearest_point_index].perimeter.finalized) {
       nearest_point_index = nearby_point_index;
     }
+  });
+
+  if (best_nearby_point_index == none) {
+    return {};
   }
 
   const SeamCandidate &best_nearby_point = layers[layer_idx].points[best_nearby_point_index];
