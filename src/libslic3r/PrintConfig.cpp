@@ -3048,7 +3048,7 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionBools { false });
 
     def = this->add("cooling_slowdown_logic", coEnums);
-    def->label = L("Slowdown logic");
+    def->label = L("Cooling slowdown logic");
     def->tooltip = L("How the layer is slowed down to reach the minimum layer time.\n"
                      "Uniform cooling: slow down all extrusions of the layer, external perimeters included.\n"
                      "Consistent surface: slow down all the other extrusions first and keep the external perimeters at their "
@@ -3061,6 +3061,19 @@ void PrintConfigDef::init_fff_params()
     def->enum_labels.push_back(L("Consistent surface"));
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionEnumsGeneric{ CoolingSlowdownLogicType::cslUniformCooling });
+
+    def = this->add("cooling_perimeter_transition_distance", coFloats);
+    def->label = L("Perimeter transition distance");
+    def->tooltip = L("Length, in millimeters, of the end of the slowed-down extrusions of a layer that keeps its original "
+                     "print speed. The speed is thus restored before the external perimeters, which reduces the "
+                     "quality issues at the transition from slowed-down to fast printing.\n"
+                     "Only applies when the Consistent surface slowdown logic is selected. Recommended value: 5-10 mm. "
+                     "Set to 0 to disable.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 50;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloats{ 10. });
 
     def = this->add("fan_cooling_layer_time", coFloats);
     def->label = L("Layer time");

@@ -219,3 +219,31 @@ TEST_CASE("Consistent surface protects outer walls from the slow down", "[Coolin
     REQUIRE(consistent < std::numeric_limits<double>::max());
     CHECK(consistent >= uniform);
 }
+
+// The transition keeps the end of the slowed down extrusions at the original feedrate; it may only
+// insert feedrate commands and must not touch the extrusion moves nor leak the internal markers.
+TEST_CASE("Consistent surface transition keeps the extrusion moves", "[Cooling]")
+{
+    const auto sliced = [](const char *distance) {
+        return slice({ cube(20) }, {
+            { "slow_down_for_layer_cooling",          true },
+            { "slow_down_layer_time",                 "30" },
+            { "slow_down_min_speed",                  "10" },
+            { "cooling_slowdown_logic",               "consistent_surface" },
+            { "cooling_perimeter_transition_distance", distance },
+        });
+    };
+    const auto count_extrusion_moves = [](const std::string &gcode) {
+        size_t count = 0;
+        std::istringstream input(gcode);
+        std::string line;
+        while (std::getline(input, line))
+            if (line.rfind("G1 ", 0) == 0 && line.find(" E") != std::string::npos)
+                ++ count;
+        return count;
+    };
+    const std::string without_transition = sliced("0");
+    const std::string with_transition    = sliced("10");
+    CHECK(count_extrusion_moves(without_transition) == count_extrusion_moves(with_transition));
+    CHECK(with_transition.find(";_EXTRUDE_SET_SPEED") == std::string::npos);
+}
