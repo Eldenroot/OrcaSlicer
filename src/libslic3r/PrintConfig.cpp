@@ -2338,7 +2338,7 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->mode = comAdvanced;
     def->nullable = true;
-    def->set_default_value(new ConfigOptionFloatsNullable{0.0});
+    def->set_default_value(new ConfigOptionFloatsNullable{250.0});
 
     def = this->add("initial_layer_travel_acceleration", coFloatsOrPercents);
     def->label = L("First layer travel");
