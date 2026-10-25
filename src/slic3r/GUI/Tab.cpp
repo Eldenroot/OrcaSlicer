@@ -4921,6 +4921,8 @@ void TabFilament::build()
         optgroup->append_single_option_line("slow_down_for_layer_cooling", "material_cooling#slow-printing-down-for-better-layer-cooling");
         optgroup->append_single_option_line("dont_slow_down_outer_wall", "material_cooling#dont-slow-down-outer-walls");
         optgroup->append_single_option_line("slow_down_min_speed", "material_cooling#min-print-speed");
+        optgroup->append_single_option_line("cooling_slowdown_logic", "material_cooling#slowdown-logic");
+        optgroup->append_single_option_line("cooling_perimeter_transition_distance", "material_cooling#perimeter-transition-distance");
 
         optgroup->append_single_option_line("enable_overhang_bridge_fan", "material_cooling#force-cooling-for-overhangs-and-bridges");
         optgroup->append_single_option_line("overhang_fan_threshold", "material_cooling#overhang-cooling-activation-threshold");
@@ -5133,6 +5135,9 @@ void TabFilament::toggle_options()
         // Orca: toggle dont slow down for external perimeters if
         bool has_slow_down_for_layer_cooling = m_config->opt_bool("slow_down_for_layer_cooling", 0);
         toggle_option("dont_slow_down_outer_wall", has_slow_down_for_layer_cooling);
+        toggle_option("cooling_slowdown_logic", has_slow_down_for_layer_cooling);
+        toggle_option("cooling_perimeter_transition_distance", has_slow_down_for_layer_cooling &&
+            m_config->opt_enum("cooling_slowdown_logic", 0) == int(cslConsistentSurface));
 
         // ORCA: First layer fan speed override only makes sense when no layers are gated off ("No cooling for
         // the first" == 0). Otherwise the override would set layer 0 to a non-zero value while the gate forces
