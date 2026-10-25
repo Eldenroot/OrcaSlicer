@@ -107,6 +107,8 @@ struct CoolingLine
         TYPE_BELT_BAND_END             = 1 << 22,
         // The end of a slowed down extrusion, which keeps its original feedrate (Consistent surface transition).
         TYPE_TRANSITION_TAIL           = 1 << 23,
+        // The first inner wall, protected from the slow down together with the external perimeters (Consistent surface).
+        TYPE_FIRST_INTERNAL_PERIMETER  = 1 << 24,
     };
 
     CoolingLine(unsigned int type, size_t  line_start, size_t  line_end) :
@@ -115,7 +117,7 @@ struct CoolingLine
 
     bool adjustable(bool slowdown_external_perimeters) const {
         return (this->type & TYPE_ADJUSTABLE) &&
-               (! (this->type & TYPE_EXTERNAL_PERIMETER) || slowdown_external_perimeters) &&
+               (! (this->type & (TYPE_EXTERNAL_PERIMETER | TYPE_FIRST_INTERNAL_PERIMETER)) || slowdown_external_perimeters) &&
                this->time < this->time_max;
     }
 
@@ -297,7 +299,7 @@ struct PerExtruderAdjustments
         float remaining = tail_length;
         for (auto it = lines.rbegin(); it != lines.rend() && remaining > 0.f; ++ it) {
             CoolingLine &line = *it;
-            if (! (line.type & CoolingLine::TYPE_ADJUSTABLE) || (line.type & CoolingLine::TYPE_EXTERNAL_PERIMETER) ||
+            if (! (line.type & CoolingLine::TYPE_ADJUSTABLE) || (line.type & (CoolingLine::TYPE_EXTERNAL_PERIMETER | CoolingLine::TYPE_FIRST_INTERNAL_PERIMETER)) ||
                 ! line.adjustable() || line.move_segments.empty() || line.feedrate <= 0.f)
                 continue;
             size_t first_tail = line.move_segments.size();
@@ -516,6 +518,8 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
             bool wipe               = boost::contains(sline, ";_WIPE");
             if (external_perimeter)
                 line.type |= CoolingLine::TYPE_EXTERNAL_PERIMETER;
+            else if (boost::contains(sline, ";_INTERNAL_PERIMETER1"))
+                line.type |= CoolingLine::TYPE_FIRST_INTERNAL_PERIMETER;
             if (wipe)
                 line.type |= CoolingLine::TYPE_WIPE;
 
@@ -1175,6 +1179,8 @@ std::string CoolingBuffer::apply_layer_cooldown(
                     boost::replace_all(comment, ";_EXTRUDE_SET_SPEED", "");
                     if (line->type & CoolingLine::TYPE_EXTERNAL_PERIMETER)
                         boost::replace_all(comment, ";_EXTERNAL_PERIMETER", "");
+                    if (line->type & CoolingLine::TYPE_FIRST_INTERNAL_PERIMETER)
+                        boost::replace_all(comment, ";_INTERNAL_PERIMETER1", "");
                     if (line->type & CoolingLine::TYPE_WIPE)
                         boost::replace_all(comment, ";_WIPE", "");
                     new_gcode += comment;

@@ -3051,8 +3051,8 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Cooling slowdown logic");
     def->tooltip = L("How the layer is slowed down to reach the minimum layer time.\n"
                      "Uniform cooling: slow down all extrusions of the layer, external perimeters included.\n"
-                     "Consistent surface: slow down all the other extrusions first and keep the external perimeters at their "
-                     "speed, so the visible surface stays uniform. The external perimeters are slowed down only if the minimum "
+                     "Consistent surface: slow down all the other extrusions first and keep the outer wall and the first inner wall "
+                     "at their speed, so the visible surface stays uniform. These walls are slowed down only if the minimum "
                      "layer time cannot be reached otherwise.");
     def->enum_keys_map = &ConfigOptionEnum<CoolingSlowdownLogicType>::get_enum_values();
     def->enum_values.push_back("uniform_cooling");
