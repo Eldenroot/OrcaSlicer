@@ -4,6 +4,7 @@
 #include "test_helpers.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/Config.hpp"
 #include "libslic3r/TriangleMesh.hpp"
@@ -124,4 +125,28 @@ TEST_CASE("Part cooling fan speed for the initial layers", "[Cooling]")
     };
     CHECK(first_fan_speed(sliced("0")) == 0);
     CHECK(first_fan_speed(sliced("30")) > 0);
+}
+
+// With the linear ramp, the auxiliary fan starts at the initial layer speed and rises to its target speed.
+TEST_CASE("Auxiliary fan linear ramp", "[Cooling]")
+{
+    const std::string gcode = slice({ cube(20) }, {
+        { "auxiliary_fan",                       true },
+        { "additional_cooling_fan_linear_ramp",  true },
+        { "close_additional_fan_first_x_layers", 2 },
+        { "first_x_layer_fan_speed",             "10" },
+        { "additional_cooling_fan_speed",        100 },
+        { "additional_fan_full_speed_layer",     6 },
+    });
+    std::vector<int> speeds;
+    std::istringstream input(gcode);
+    std::string line;
+    while (std::getline(input, line))
+        if (line.rfind("M106 P2 S", 0) == 0)
+            if (const int speed = std::atoi(line.c_str() + 9); speed > 0)
+                speeds.push_back(speed);
+    REQUIRE(speeds.size() > 1);
+    CHECK(std::is_sorted(speeds.begin(), speeds.end()));
+    CHECK(speeds.front() < speeds.back());
+    CHECK(speeds.back() == 255);
 }

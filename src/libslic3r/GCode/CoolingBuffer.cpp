@@ -875,12 +875,12 @@ std::string CoolingBuffer::apply_layer_cooldown(
             const int   aux_first_layers = m_config.close_additional_fan_first_x_layers.get_at(m_current_extruder);
             const int   aux_full_layer   = m_config.additional_fan_full_speed_layer.get_at(m_current_extruder);
             const float aux_target       = float(m_config.additional_cooling_fan_speed.get_at(config_index));
-            const float aux_first_speed  = std::min(float(m_config.first_x_layer_fan_speed.get_at(m_current_extruder)), aux_target);
+            const float aux_first_speed  = float(m_config.first_x_layer_fan_speed.get_at(m_current_extruder));
             if (int(layer_id) < aux_first_layers)
-                additional_fan_speed_new = int(aux_first_speed + 0.5f);
+                additional_fan_speed_new = std::clamp(int(aux_first_speed + 0.5f), 0, 100);
             else if (int(layer_id) + 1 < aux_full_layer) {
                 const float t = float(int(layer_id) + 1 - aux_first_layers) / float(aux_full_layer - aux_first_layers);
-                additional_fan_speed_new = int(aux_first_speed + t * (aux_target - aux_first_speed) + 0.5f);
+                additional_fan_speed_new = std::clamp(int(aux_first_speed + t * (aux_target - aux_first_speed) + 0.5f), 0, 100);
             } else
                 additional_fan_speed_new = int(aux_target);
         }
