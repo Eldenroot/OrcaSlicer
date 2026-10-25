@@ -676,6 +676,12 @@ static t_config_enum_values s_keys_map_ToolChangeOrderingType {
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(ToolChangeOrderingType)
 
+static const t_config_enum_values s_keys_map_CoolingSlowdownLogicType = {
+    { "uniform_cooling",    cslUniformCooling },
+    { "consistent_surface", cslConsistentSurface }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(CoolingSlowdownLogicType)
+
 static const t_config_enum_values s_keys_map_ZHopType = {
     { "Auto Lift",          zhtAuto },
     { "Normal Lift",        zhtNormal },
@@ -3040,6 +3046,21 @@ void PrintConfigDef::init_fff_params()
                      "2. To avoid changes in external wall speed which may create slight wall artifacts that appear like Z banding\n"
                      "3. To avoid printing at speeds which cause VFAs (fine artifacts) on the external walls");
     def->set_default_value(new ConfigOptionBools { false });
+
+    def = this->add("cooling_slowdown_logic", coEnums);
+    def->label = L("Slowdown logic");
+    def->tooltip = L("How the layer is slowed down to reach the minimum layer time.\n"
+                     "Uniform cooling: slow down all extrusions of the layer, external perimeters included.\n"
+                     "Consistent surface: slow down all the other extrusions first and keep the external perimeters at their "
+                     "speed, so the visible surface stays uniform. The external perimeters are slowed down only if the minimum "
+                     "layer time cannot be reached otherwise.");
+    def->enum_keys_map = &ConfigOptionEnum<CoolingSlowdownLogicType>::get_enum_values();
+    def->enum_values.push_back("uniform_cooling");
+    def->enum_values.push_back("consistent_surface");
+    def->enum_labels.push_back(L("Uniform cooling"));
+    def->enum_labels.push_back(L("Consistent surface"));
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnumsGeneric{ CoolingSlowdownLogicType::cslUniformCooling });
 
     def = this->add("fan_cooling_layer_time", coFloats);
     def->label = L("Layer time");

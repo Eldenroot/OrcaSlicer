@@ -206,13 +206,14 @@ struct PerExtruderAdjustments
     // Sort the lines, adjustable first, higher feedrate first.
     // Used by non-proportional slow down.
     void sort_lines_by_decreasing_feedrate() {
-        std::sort(lines.begin(), lines.end(), [](const CoolingLine &l1, const CoolingLine &l2) {
-            bool adj1 = l1.adjustable();
-            bool adj2 = l2.adjustable();
+        const bool slowdown_external = ! protect_external;
+        std::sort(lines.begin(), lines.end(), [slowdown_external](const CoolingLine &l1, const CoolingLine &l2) {
+            bool adj1 = l1.adjustable(slowdown_external);
+            bool adj2 = l2.adjustable(slowdown_external);
             return (adj1 == adj2) ? l1.feedrate > l2.feedrate : adj1;
         });
         for (n_lines_adjustable = 0;
-            n_lines_adjustable < lines.size() && this->lines[n_lines_adjustable].adjustable();
+            n_lines_adjustable < lines.size() && this->lines[n_lines_adjustable].adjustable(! protect_external);
             ++ n_lines_adjustable);
         time_non_adjustable = 0.f;
         for (size_t i = n_lines_adjustable; i < lines.size(); ++ i)
@@ -261,6 +262,11 @@ struct PerExtruderAdjustments
     float                       slow_down_min_speed     = 0.f;
     
     bool                        dont_slow_down_outer_wall = false;
+    // Consistent surface slowdown logic: the external perimeters are excluded from the slow down
+    // until all the other extrusions are slowed down to their minimum speed.
+    bool                        consistent_surface = false;
+    // Set while the external perimeters are protected from the slow down (see calculate_layer_slowdown()).
+    bool                        protect_external   = false;
 
 
     // Parsed lines.
@@ -372,6 +378,7 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
         adj.slow_down_min_speed           = float(m_config.slow_down_min_speed.get_at(extruder_id));
         // ORCA: To enable dont slow down external perimeters feature per filament (extruder)
         adj.dont_slow_down_outer_wall   = m_config.dont_slow_down_outer_wall.get_at(extruder_id);
+        adj.consistent_surface          = m_config.cooling_slowdown_logic.get_at(extruder_id) == cslConsistentSurface;
         map_extruder_to_per_extruder_adjustment[extruder_id] = i;
     }
 
@@ -626,10 +633,10 @@ static inline void extruder_range_slow_down_non_proportional(
                 // and the minimum speed is set to zero.
                 float time_adjustable = 0.f;
                 for (auto it = adj; it != by_min_print_speed.end(); ++ it)
-                    time_adjustable += (*it)->adjustable_time(true);
+                    time_adjustable += (*it)->adjustable_time(! (*it)->protect_external);
                 float rate = (time_adjustable + time_stretch) / time_adjustable;
                 for (auto it = adj; it != by_min_print_speed.end(); ++ it)
-                    (*it)->slow_down_proportional(rate, true);
+                    (*it)->slow_down_proportional(rate, ! (*it)->protect_external);
                 return;
             } else {
                 float feedrate_limit = std::max(feedrate_next, (*adj)->slow_down_min_speed);
@@ -701,17 +708,49 @@ float CoolingBuffer::calculate_layer_slowdown(std::vector<PerExtruderAdjustments
             // The current total time is above the minimum threshold of the rest of the extruders, don't adjust anything.
         } else {
             // Adjust this and all the following (higher m_config.slow_down_layer_time) extruders.
-            // Sum maximum slow down time as if everything was slowed down including the external perimeters.
+            // Consistent surface: the external perimeters of the extruders using it are excluded from the first pass.
+            bool consistent_surface = false;
+            for (auto it = cur_begin; it != by_slowdown_time.end(); ++ it) {
+                (*it)->protect_external = (*it)->consistent_surface;
+                consistent_surface     |= (*it)->protect_external;
+            }
+            if (consistent_surface)
+                for (auto it = cur_begin; it != by_slowdown_time.end(); ++ it)
+                    (*it)->sort_lines_by_decreasing_feedrate();
+            // Sum maximum slow down time as if everything was slowed down including the external perimeters,
+            // unless they are protected.
             float max_time = elapsed_time_total0;
             for (auto it = cur_begin; it != by_slowdown_time.end(); ++ it)
-                max_time += (*it)->time_maximum;
+                max_time += (*it)->protect_external ? (*it)->maximum_time_after_slowdown(false) : (*it)->time_maximum;
             if (max_time > slow_down_layer_time) {
                 extruder_range_slow_down_non_proportional(cur_begin, by_slowdown_time.end(), slow_down_layer_time - total);
+            } else if (consistent_surface) {
+                // The layer time cannot be reached without the external perimeters. Slow down everything else
+                // to the minimum speed and let the external perimeters take over the rest.
+                float total_protected = elapsed_time_total0;
+                float max_time_all    = elapsed_time_total0;
+                for (auto it = cur_begin; it != by_slowdown_time.end(); ++ it) {
+                    (*it)->slowdown_to_minimum_feedrate(! (*it)->protect_external);
+                    (*it)->protect_external = false;
+                    total_protected += (*it)->time_total;
+                    max_time_all    += (*it)->time_maximum;
+                }
+                if (max_time_all > slow_down_layer_time) {
+                    for (auto it = cur_begin; it != by_slowdown_time.end(); ++ it)
+                        (*it)->sort_lines_by_decreasing_feedrate();
+                    extruder_range_slow_down_non_proportional(cur_begin, by_slowdown_time.end(), slow_down_layer_time - total_protected);
+                } else {
+                    for (auto it = cur_begin; it != by_slowdown_time.end(); ++ it)
+                        (*it)->slowdown_to_minimum_feedrate(true);
+                }
             } else {
                 // Slow down to maximum possible.
                 for (auto it = cur_begin; it != by_slowdown_time.end(); ++ it)
                     (*it)->slowdown_to_minimum_feedrate(true);
             }
+            // The protection is only valid within this slow down pass.
+            for (auto it = cur_begin; it != by_slowdown_time.end(); ++ it)
+                (*it)->protect_external = false;
         }
         elapsed_time_total0 += adj.elapsed_time_total();
     }

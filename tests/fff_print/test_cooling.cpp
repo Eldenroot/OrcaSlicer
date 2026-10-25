@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
+#include <limits>
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/Config.hpp"
 #include "libslic3r/TriangleMesh.hpp"
@@ -157,4 +159,63 @@ TEST_CASE("Overhang fan transitions do not depend on overhang speed", "[Cooling]
                         [](const auto &command) { return command.second.find("S255") != std::string::npos; }));
     REQUIRE(with_speed_feedrates != without_speed_feedrates);
     CHECK(with_speed_fan == without_speed_fan);
+}
+
+namespace {
+// The lowest feedrate (mm/min) used for an extrusion of the "Outer wall" feature.
+// The cooling pass drops repeated F words, so the last F seen is tracked.
+double lowest_outer_wall_feedrate(const std::string &gcode)
+{
+    double lowest = std::numeric_limits<double>::max();
+    double current_f = 0.;
+    bool outer_wall = false;
+    std::istringstream input(gcode);
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.rfind(";TYPE:", 0) == 0) {
+            outer_wall = line == ";TYPE:Outer wall";
+            continue;
+        }
+        if (line.rfind("G1 ", 0) != 0)
+            continue;
+        const size_t f_pos = line.find(" F");
+        if (f_pos != std::string::npos)
+            current_f = std::atof(line.c_str() + f_pos + 2);
+        if (outer_wall && line.find(" E") != std::string::npos && current_f > 0.)
+            lowest = std::min(lowest, current_f);
+    }
+    return lowest;
+}
+} // namespace
+
+// Without a required slow down both logics must produce identical G-code.
+TEST_CASE("Consistent surface does not alter layers that need no slow down", "[Cooling]")
+{
+    const auto sliced = [](const char *logic) {
+        return slice({ cube(20) }, {
+            { "slow_down_for_layer_cooling", true },
+            { "slow_down_layer_time",        "0" },
+            { "cooling_slowdown_logic",      logic },
+        });
+    };
+    CHECK(sliced("uniform_cooling") == sliced("consistent_surface"));
+}
+
+// The consistent surface logic slows the outer walls down only after everything else, so they
+// are never slower than with the uniform logic.
+TEST_CASE("Consistent surface protects outer walls from the slow down", "[Cooling]")
+{
+    const auto outer_wall_feedrate = [](const char *logic) {
+        return lowest_outer_wall_feedrate(slice({ cube(20) }, {
+            { "slow_down_for_layer_cooling", true },
+            { "slow_down_layer_time",        "30" },
+            { "slow_down_min_speed",         "10" },
+            { "cooling_slowdown_logic",      logic },
+        }));
+    };
+    const double uniform    = outer_wall_feedrate("uniform_cooling");
+    const double consistent = outer_wall_feedrate("consistent_surface");
+    REQUIRE(uniform < std::numeric_limits<double>::max());
+    REQUIRE(consistent < std::numeric_limits<double>::max());
+    CHECK(consistent >= uniform);
 }
