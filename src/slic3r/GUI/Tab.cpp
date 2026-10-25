@@ -4619,7 +4619,12 @@ void TabFilament::build()
         //};
         //optgroup->append_line(line);
         optgroup = page->new_optgroup(L("Cooling for specific layer"), L"param_cooling_specific_layer");
-        optgroup->append_single_option_line("close_fan_the_first_x_layers", "material_cooling#no-cooling-for-the-first");
+        line = { L("Initial layer fan"), L("Set the part cooling fan speed for the first few layers. "
+                                           "Set to 0 to keep the fan off for better bed adhesion.") };
+        line.label_path = "material_cooling#no-cooling-for-the-first";
+        line.append_option(optgroup->get_option("close_fan_the_first_x_layers"));
+        line.append_option(optgroup->get_option("first_x_layer_part_fan_speed"));
+        optgroup->append_line(line);
         // ORCA: explicit override for the part cooling fan on layer 0; also anchors the ramp when "Full fan speed at layer" is set.
         optgroup->append_single_option_line("initial_layer_fan_speed", "material_cooling#first-layer-fan-speed");
         optgroup->append_single_option_line("full_fan_speed_layer", "material_cooling#full-fan-speed-at-layer");
@@ -4866,6 +4871,8 @@ void TabFilament::toggle_options()
         // override branch.
         const int close_fan_first_n = m_config->opt_int("close_fan_the_first_x_layers", 0);
         const bool initial_layer_fan_speed_enabled = close_fan_first_n <= 0;
+        // The fan speed of the first layers only applies when there are first layers.
+        toggle_option("first_x_layer_part_fan_speed", close_fan_first_n > 0);
         toggle_line("initial_layer_fan_speed", initial_layer_fan_speed_enabled);
         if (!initial_layer_fan_speed_enabled) {
             if (auto* opt = dynamic_cast<const ConfigOptionInts*>(m_config->option("initial_layer_fan_speed"))) {

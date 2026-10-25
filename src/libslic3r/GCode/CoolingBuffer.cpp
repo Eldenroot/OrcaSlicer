@@ -761,6 +761,8 @@ std::string CoolingBuffer::apply_layer_cooldown(
         //BBS
         int additional_fan_speed_new = m_config.additional_cooling_fan_speed.get_at(config_index);
         int close_fan_the_first_x_layers = EXTRUDER_CONFIG(close_fan_the_first_x_layers);
+        // Part cooling fan speed during the first close_fan_the_first_x_layers layers, where the ramp starts from.
+        const int first_x_layer_part_fan_speed = EXTRUDER_CONFIG(first_x_layer_part_fan_speed);
         // Is the fan speed ramp enabled?
         int full_fan_speed_layer = EXTRUDER_CONFIG(full_fan_speed_layer);
         // ORCA: explicit per-filament first-layer override (-1 = disabled, 0-100 = forced PWM percent on layer 0).
@@ -827,9 +829,11 @@ std::string CoolingBuffer::apply_layer_cooldown(
                     overhang_fan_speed = std::clamp(int(anchor + t * (float(overhang_fan_speed) - anchor) + 0.5f), 0, 255);
                 } else {
                     // Ramp up the fan speed from close_fan_the_first_x_layers to full_fan_speed_layer.
+                    // The ramp starts from first_x_layer_part_fan_speed, which is zero unless set.
                     float factor = float(int(layer_id + 1) - close_fan_the_first_x_layers) / float(full_fan_speed_layer - close_fan_the_first_x_layers);
-                    fan_speed_new    = std::clamp(int(float(fan_speed_new) * factor + 0.5f), 0, 255);
-                    overhang_fan_speed = std::clamp(int(float(overhang_fan_speed) * factor + 0.5f), 0, 255);
+                    const float first_speed = float(first_x_layer_part_fan_speed);
+                    fan_speed_new    = std::clamp(int(first_speed * (1.f - factor) + float(fan_speed_new) * factor + 0.5f), 0, 255);
+                    overhang_fan_speed = std::clamp(int(first_speed * (1.f - factor) + float(overhang_fan_speed) * factor + 0.5f), 0, 255);
                 }
             }
             supp_interface_fan_speed = EXTRUDER_CONFIG(support_material_interface_fan_speed);
@@ -854,7 +858,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
         } else {
             overhang_fan_control = false;
             overhang_fan_speed   = 0;
-            fan_speed_new      = 0;
+            fan_speed_new      = first_x_layer_part_fan_speed;
             additional_fan_speed_new = 0;
             supp_interface_fan_control = false; 
             supp_interface_fan_speed   = 0;

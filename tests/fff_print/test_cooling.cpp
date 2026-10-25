@@ -99,3 +99,29 @@ TEST_CASE("Overhang fan transitions do not depend on overhang speed", "[Cooling]
     REQUIRE(with_speed_feedrates != without_speed_feedrates);
     CHECK(with_speed_fan == without_speed_fan);
 }
+
+namespace {
+// The speed of the first M106 command, or -1 if there is none.
+int first_fan_speed(const std::string &gcode)
+{
+    std::istringstream input(gcode);
+    std::string line;
+    while (std::getline(input, line))
+        if (line.rfind("M106 S", 0) == 0)
+            return std::atoi(line.c_str() + 6);
+    return -1;
+}
+} // namespace
+
+// The part cooling fan runs at first_x_layer_part_fan_speed instead of being off for the first layers.
+TEST_CASE("Part cooling fan speed for the initial layers", "[Cooling]")
+{
+    const auto sliced = [](const char *speed) {
+        return slice({ cube(20) }, {
+            { "close_fan_the_first_x_layers",  3 },
+            { "first_x_layer_part_fan_speed",  speed },
+        });
+    };
+    CHECK(first_fan_speed(sliced("0")) == 0);
+    CHECK(first_fan_speed(sliced("30")) > 0);
+}
