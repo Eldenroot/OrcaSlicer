@@ -1264,6 +1264,7 @@ TEST_CASE("Custom G-code motion limits are restored before generated moves", "[G
         { "initial_layer_jerk",          "8" },
         { "outer_wall_jerk",             "8" },
         { "inner_wall_jerk",             "0" },
+        { "travel_short_distance_acceleration", "0" },
     });
 
     const size_t custom_gcode_pos = gcode.find("m205 x5 y5");
