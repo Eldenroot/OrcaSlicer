@@ -158,3 +158,49 @@ TEST_CASE("Overhang fan transitions do not depend on overhang speed", "[Cooling]
     REQUIRE(with_speed_feedrates != without_speed_feedrates);
     CHECK(with_speed_fan == without_speed_fan);
 }
+
+// The overhang fan starts ahead of the overhang by the pre start fan time and nothing else changes.
+TEST_CASE("Pre start fan time switches the overhang fan on before the overhang", "[Cooling]")
+{
+    const auto sliced = [](const char *pre_start_fan_time) {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.set_deserialize_strict({
+            { "enable_overhang_bridge_fan",     true },
+            { "enable_overhang_speed",          false },
+            { "slow_down_for_layer_cooling",    false },
+            { "slowdown_for_curled_perimeters", false },
+            { "layer_height",                   0.3 },
+            { "initial_layer_print_height",     0.3 },
+        });
+        config.set_key_value("fan_max_speed", new ConfigOptionFloats{20.0});
+        config.set_key_value("fan_min_speed", new ConfigOptionFloats{20.0});
+        config.set_key_value("overhang_fan_speed", new ConfigOptionInts{100});
+        config.set_key_value("overhang_fan_threshold", new ConfigOptionEnumsGeneric{Overhang_threshold_2_4});
+        config.set_key_value("pre_start_fan_time", new ConfigOptionFloats{std::atof(pre_start_fan_time)});
+        return slice({make_sphere(50.0, PI / 24.0)}, config);
+    };
+
+    // The G-code without its fan commands, and where the overhang fan commands sit among the other lines.
+    struct Result { std::vector<std::string> moves; std::vector<size_t> overhang_fan_positions; };
+    const auto analyze = [](const std::string &gcode) {
+        Result result;
+        std::istringstream input(gcode);
+        std::string line;
+        while (std::getline(input, line)) {
+            if (line.rfind("M106", 0) == 0) {
+                if (line.find("S255") != std::string::npos)
+                    result.overhang_fan_positions.push_back(result.moves.size());
+                continue;
+            }
+            result.moves.push_back(line);
+        }
+        return result;
+    };
+
+    const Result without = analyze(sliced("0"));
+    const Result with    = analyze(sliced("3"));
+
+    REQUIRE_FALSE(without.overhang_fan_positions.empty());
+    CHECK(with.moves == without.moves);
+    CHECK(with.overhang_fan_positions != without.overhang_fan_positions);
+}
