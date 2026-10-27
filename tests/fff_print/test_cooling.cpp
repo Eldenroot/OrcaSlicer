@@ -1,10 +1,14 @@
 #include <catch2/catch_all.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "test_helpers.hpp"
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
+#include <limits>
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/Config.hpp"
 #include "libslic3r/TriangleMesh.hpp"
