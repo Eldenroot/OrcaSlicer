@@ -9884,6 +9884,9 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
         }
     } else if (opt_key == "overhang_fan_threshold" && value == "5%") {
         value = "10%";
+    } else if (opt_key == "overhang_threshold_participating_cooling" && value == "95%") {
+        // Profiles imported from BambuStudio name the highest level "95%", which is "100%" here.
+        value = "100%";
     } else if( opt_key == "wall_infill_order" ) {
         if (value == "inner wall/outer wall/infill" || value == "infill/inner wall/outer wall") {
             opt_key = "wall_sequence";
