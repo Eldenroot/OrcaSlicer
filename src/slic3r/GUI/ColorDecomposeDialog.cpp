@@ -241,6 +241,8 @@ ColorDecomposeDialog::ColorDecomposeDialog(wxWindow* parent,
     compute_decomposition();
     update_matched_color_display();
     update_ok_button_state();
+    // The size changed since build_ui() centered the dialog.
+    CenterOnParent();
 }
 
 void ColorDecomposeDialog::on_dpi_changed(const wxRect& suggested_rect)
@@ -581,7 +583,9 @@ wxBoxSizer* ColorDecomposeDialog::create_mode_selection_section()
     m_basic_warning_text = new wxStaticText(m_basic_warning_panel, wxID_ANY, wxEmptyString);
     m_basic_warning_text->SetFont(Label::Body_13);
     m_basic_warning_text->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#6B6A6A")));
-    m_basic_warning_text->Wrap(FromDIP(400));
+    // The text is wrapped to the width of the dialog when it is shown. Without a small minimum width, its
+    // unwrapped width would count as the width the dialog needs.
+    m_basic_warning_text->SetMinSize(wxSize(FromDIP(100), -1));
     basic_sizer->Add(m_basic_warning_text, 1, wxEXPAND);
     m_basic_warning_panel->SetSizer(basic_sizer);
     m_basic_warning_panel->Hide();
@@ -721,11 +725,11 @@ void ColorDecomposeDialog::update_basic_support_warning()
     const wxString text = (m_selected_mode == DecomposeMode::CMYW)
         ? _L("A closer mix is calculated from four base colors: cyan, magenta, yellow, and white, using PLA Basic. If matching filaments are not in the project, they will be added automatically.")
         : _L("A closer mix is calculated from four base colors: red, yellow, blue, and white, using PLA Basic. If matching filaments are not in the project, they will be added automatically.");
-    // Show first so the text gets its real width, then wrap to it.
+    // Show first so the panel gets the width of the dialog, then wrap the text to it.
     m_basic_warning_panel->Show();
     m_basic_warning_text->SetLabel(text);
     Layout();
-    const int avail = m_basic_warning_text->GetClientSize().x;
+    const int avail = m_basic_warning_panel->GetClientSize().x;
     if (avail > FromDIP(50))
         m_basic_warning_text->Wrap(avail);
     Layout();
