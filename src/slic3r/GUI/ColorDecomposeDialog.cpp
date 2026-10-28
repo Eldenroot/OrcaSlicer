@@ -184,6 +184,12 @@ static void match_parent_bg(wxWindow* w, const wxColour& bg)
     w->SetBackgroundColour(bg);
 }
 
+// The standard modes (CMYW, RYBW) are built from PLA Basic base colors, which suits every PLA type.
+static bool is_pla_family(const std::string& type)
+{
+    return type == kDecomposePlaShortType || type.rfind(std::string(kDecomposePlaShortType) + " ", 0) == 0;
+}
+
 static bool material_type_matches(const std::string& a, const std::string& b)
 {
     if (a.empty() || b.empty())
@@ -561,6 +567,18 @@ wxBoxSizer* ColorDecomposeDialog::create_mode_selection_section()
     m_no_card_hint->Hide();
     sizer->Add(m_no_card_hint, 0, wxTOP, FromDIP(8));
 
+    m_basic_warning_panel = new wxPanel(this, wxID_ANY);
+    m_basic_warning_panel->SetBackgroundColour(StateColor::darkModeColorFor(*wxWHITE));
+    auto* basic_sizer = new wxBoxSizer(wxHORIZONTAL);
+    m_basic_warning_text = new wxStaticText(m_basic_warning_panel, wxID_ANY, wxEmptyString);
+    m_basic_warning_text->SetFont(Label::Body_13);
+    m_basic_warning_text->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#6B6A6A")));
+    m_basic_warning_text->Wrap(FromDIP(400));
+    basic_sizer->Add(m_basic_warning_text, 1, wxEXPAND);
+    m_basic_warning_panel->SetSizer(basic_sizer);
+    m_basic_warning_panel->Hide();
+    sizer->Add(m_basic_warning_panel, 0, wxEXPAND | wxTOP, FromDIP(8));
+
     m_limit_warning_panel = new wxPanel(this, wxID_ANY);
     m_limit_warning_panel->SetBackgroundColour(StateColor::darkModeColorFor(*wxWHITE));
     auto* warning_sizer = new wxBoxSizer(wxHORIZONTAL);
@@ -606,6 +624,7 @@ void ColorDecomposeDialog::select_mode(DecomposeMode mode)
     m_selected_mode = mode;
     m_result = m_mode_results[mode_index(mode)];
     update_card_styles();
+    update_basic_support_warning();
     update_matched_color_display();
     update_ok_button_state();
 }
@@ -639,8 +658,8 @@ void ColorDecomposeDialog::update_card_visibility()
     }
 
     bool show_arb  = (same_type_count >= 2);
-    bool show_cmyw = (m_preferred_type == kDecomposePlaBasicType);
-    bool show_rybw = (m_preferred_type == kDecomposePlaBasicType);
+    bool show_cmyw = is_pla_family(m_preferred_type);
+    bool show_rybw = is_pla_family(m_preferred_type);
     // CMYK+W is computed analytically, so it needs no filament table.
     bool show_cmykw = m_cmykw_enabled;
 
@@ -670,7 +689,41 @@ void ColorDecomposeDialog::update_card_visibility()
     }
 
     Layout();
+    update_basic_support_warning();
     update_ok_button_state();
+}
+
+void ColorDecomposeDialog::update_basic_support_warning()
+{
+    if (!m_basic_warning_panel || !m_basic_warning_text)
+        return;
+
+    const bool show = is_pla_family(m_preferred_type)
+        && (m_selected_mode == DecomposeMode::CMYW || m_selected_mode == DecomposeMode::RYBW);
+    const bool was_shown = m_basic_warning_panel->IsShown();
+    if (!show) {
+        if (was_shown) {
+            m_basic_warning_panel->Hide();
+            Layout();
+            Fit();
+        }
+        return;
+    }
+
+    const wxString text = (m_selected_mode == DecomposeMode::CMYW)
+        ? _L("A closer mix is calculated from four base colors: cyan, magenta, yellow, and white, using PLA Basic. If matching filaments are not in the project, they will be added automatically.")
+        : _L("A closer mix is calculated from four base colors: red, yellow, blue, and white, using PLA Basic. If matching filaments are not in the project, they will be added automatically.");
+    // Show first so the text gets its real width, then wrap to it.
+    m_basic_warning_panel->Show();
+    m_basic_warning_text->SetLabel(text);
+    Layout();
+    const int avail = m_basic_warning_text->GetClientSize().x;
+    if (avail > FromDIP(50))
+        m_basic_warning_text->Wrap(avail);
+    Layout();
+    // Only resize when the banner appears, so switching cards does not make the dialog jump.
+    if (!was_shown)
+        Fit();
 }
 
 void ColorDecomposeDialog::update_filament_limit_warning()
@@ -860,7 +913,7 @@ bool ColorDecomposeDialog::try_build_single_base_result(DecomposeMode mode, Colo
 {
     // Gate by preferred type, matching card visibility: CMYW and RYBW only for PLA Basic.
     if (mode == DecomposeMode::CMYW || mode == DecomposeMode::RYBW) {
-        if (m_preferred_type != kDecomposePlaBasicType)
+        if (!is_pla_family(m_preferred_type))
             return false;
     } else {
         return false;
@@ -885,7 +938,7 @@ bool ColorDecomposeDialog::try_build_single_base_result(DecomposeMode mode, Colo
     for (size_t i = 0; i < base_count; ++i) {
         const DecomposeBaseColor base = bases[i];
         DecomposeOfficialComponent official =
-            lookup_decompose_official_component(m_preferred_type, base, pure_color_for_base(base));
+            lookup_decompose_official_component(kDecomposePlaBasicType, base, pure_color_for_base(base));
         if (decompose_normalize_color_hex(official.color_hex) != target_hex)
             continue;
 

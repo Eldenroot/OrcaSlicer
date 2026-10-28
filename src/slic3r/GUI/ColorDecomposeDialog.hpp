@@ -94,6 +94,7 @@ private:
     void update_matched_color_display();
     void update_ok_button_state();
     void update_filament_limit_warning();
+    void update_basic_support_warning();
 
     void compute_decomposition();
 
@@ -148,6 +149,8 @@ private:
     wxStaticText*               m_no_card_hint{nullptr};
 
     // Warning shown when decomposition would exceed filament limit
+    wxPanel*                    m_basic_warning_panel{nullptr};
+    wxStaticText*               m_basic_warning_text{nullptr};
     wxPanel*                    m_limit_warning_panel{nullptr};
     wxStaticText*               m_limit_warning_text{nullptr};
 
