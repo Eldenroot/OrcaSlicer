@@ -190,6 +190,7 @@
 
 #include "GUI.hpp"
 #include "GUI_Utils.hpp"
+#include "Event.hpp"
 #include "3DScene.hpp"
 #include "MainFrame.hpp"
 #include "Plater.hpp"
