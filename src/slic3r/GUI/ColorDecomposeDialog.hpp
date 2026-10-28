@@ -93,7 +93,7 @@ protected:
 private:
     void build_ui();
     wxBoxSizer* create_filament_selector();
-    wxBoxSizer* create_target_color_section();
+    wxBoxSizer* create_result_section();
     wxBoxSizer* create_mode_selection_section();
     wxPanel*    create_mode_card(wxWindow* parent, DecomposeMode mode, const wxString& title);
     wxBoxSizer* create_button_panel();
@@ -108,6 +108,10 @@ private:
     void update_filament_limit_warning();
     void update_basic_support_warning();
     DecomposePreviewIds preview_ids_for(const ColorDecomposeResult& result) const;
+    // True when preview_id already maps to a filament of the project; other IDs get a "New" badge.
+    bool is_existing_physical_id(int preview_id) const;
+    bool has_usable_card() const;
+    void fit_around_center();
 
     void compute_decomposition();
 
@@ -143,6 +147,12 @@ private:
     wxPanel*                    m_target_swatch{nullptr};
     wxStaticText*               m_target_rgb_text{nullptr};
     wxPanel*                    m_matched_swatch{nullptr};
+    wxPanel*                    m_filament_card{nullptr};
+    wxPanel*                    m_decomposed_container{nullptr};
+    wxPanel*                    m_result_v_divider{nullptr};
+    wxWindow*                   m_result_arrow{nullptr};
+    wxStaticText*               m_decomposed_label{nullptr};
+    wxBoxSizer*                 m_result_components_sizer{nullptr};
     wxStaticText*               m_matched_rgb_text{nullptr};
 
     // Mode cards
