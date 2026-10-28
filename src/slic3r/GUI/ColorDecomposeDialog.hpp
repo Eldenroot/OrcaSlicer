@@ -72,6 +72,8 @@ public:
     // virtual physical filaments), instead of the project-config based default
     // that cannot see not-yet-committed virtual base colors.
     void set_missing_physical_calculator(std::function<size_t(const ColorDecomposeResult&)> fn);
+    // CMYK+W only lists a mix and creates no mixed filament; callers that need one must turn it off.
+    void set_cmykw_enabled(bool enabled);
 
 protected:
     void on_dpi_changed(const wxRect& suggested_rect) override;
@@ -134,6 +136,7 @@ private:
     wxPanel*                    m_card_cmyw{nullptr};
     wxPanel*                    m_card_rybw{nullptr};
     wxPanel*                    m_card_cmykw{nullptr};
+    bool                        m_cmykw_enabled{true};
     wxPanel*                    m_arb_column_panel{nullptr};
     CheckBox*                   m_chk_material_list{nullptr};
     CheckBox*                   m_chk_cmyw{nullptr};

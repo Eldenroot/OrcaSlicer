@@ -59,7 +59,7 @@ static const wxColour RYBW_YELLOW(255, 255, 0);
 static const wxColour RYBW_BLUE(0, 0, 255);
 static const wxColour RYBW_WHITE(255, 255, 255);
 
-// Real 3D Print CMYKW base colors (reuses CMYW + adds K)
+// CMYK+W base colors (the CMYW colors plus a near-black K)
 static const wxColour CMYKW_CYAN(0, 255, 255);
 static const wxColour CMYKW_MAGENTA(255, 0, 255);
 static const wxColour CMYKW_YELLOW(255, 255, 0);
@@ -641,8 +641,8 @@ void ColorDecomposeDialog::update_card_visibility()
     bool show_arb  = (same_type_count >= 2);
     bool show_cmyw = (m_preferred_type == kDecomposePlaBasicType);
     bool show_rybw = (m_preferred_type == kDecomposePlaBasicType);
-    // CMYK+W is computed analytically, so it needs no filament table and is always available.
-    bool show_cmykw = true;
+    // CMYK+W is computed analytically, so it needs no filament table.
+    bool show_cmykw = m_cmykw_enabled;
 
     if (m_arb_column_panel)   m_arb_column_panel->Show(show_arb);
     if (m_card_material_list) m_card_material_list->Show(show_arb);
@@ -739,6 +739,13 @@ void ColorDecomposeDialog::set_missing_physical_calculator(std::function<size_t(
 {
     m_missing_calculator = std::move(fn);
     update_ok_button_state();
+}
+
+void ColorDecomposeDialog::set_cmykw_enabled(bool enabled)
+{
+    m_cmykw_enabled = enabled;
+    update_card_visibility();
+    Fit();
 }
 
 void ColorDecomposeDialog::update_ok_button_state()
@@ -984,7 +991,7 @@ void ColorDecomposeDialog::compute_decomposition()
             });
     }
 
-    // CMYK+W: always computed analytically — no JSON recipe table needed.
+    // CMYK+W is computed analytically, no recipe table is needed.
     {
         auto cmykw_recipe = lookup_standard_recipe(target_rgb, ColorDecomposeRecipeMode::CMYKW,
                                                    std::string());
