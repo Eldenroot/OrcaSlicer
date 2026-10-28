@@ -1420,5 +1420,151 @@ void ColorDecomposeDialog::compute_decomposition()
     update_ok_button_state();
 }
 
+namespace {
+
+// Shows the CMYK+W mix of a color: the target, the color the mix gives and the share of each of the five
+// fixed filament slots.
+class CmykwMixDialog : public DPIDialog
+{
+public:
+    CmykwMixDialog(wxWindow* parent, const ColorDecomposeResult& result, const wxColour& target_color)
+        : DPIDialog(parent, wxID_ANY, _L("CMYK+W Mix"), wxDefaultPosition, wxDefaultSize, wxCAPTION | wxCLOSE_BOX)
+    {
+        build_ui(result, target_color);
+        wxGetApp().UpdateDlgDarkUI(this);
+        // Dark mode remaps the swatch backgrounds, so set them again.
+        for (const auto& fix : m_swatch_colors)
+            fix.first->SetBackgroundColour(fix.second);
+        Fit();
+        CenterOnParent();
+    }
+
+protected:
+    void on_dpi_changed(const wxRect&) override
+    {
+        Fit();
+        Refresh();
+    }
+
+private:
+    void build_ui(const ColorDecomposeResult& result, const wxColour& target_color)
+    {
+        SetBackgroundColour(StateColor::darkModeColorFor(*wxWHITE));
+        const int margin = FromDIP(30);
+        const wxColour box_bg = StateColor::darkModeColorFor(*wxWHITE);
+        auto* main_sizer = new wxBoxSizer(wxVERTICAL);
+        main_sizer->AddSpacer(FromDIP(22));
+
+        // Target color -> color of the mix
+        auto* row = new wxBoxSizer(wxHORIZONTAL);
+        row->Add(create_color_card(_L("Target Color"), target_color), 0, wxALIGN_TOP);
+        auto* arrow_col = new wxBoxSizer(wxVERTICAL);
+        arrow_col->AddSpacer(FromDIP(26));
+        arrow_col->AddStretchSpacer(1);
+        arrow_col->Add(create_result_arrow(this), 0, wxALIGN_CENTER_HORIZONTAL | wxLEFT | wxRIGHT, FromDIP(16));
+        arrow_col->AddStretchSpacer(1);
+        row->Add(arrow_col, 0, wxEXPAND);
+        row->Add(create_color_card(_L("Decomposed Colors"), result.matched_color.IsOk() ? result.matched_color : target_color),
+                 0, wxALIGN_TOP);
+        main_sizer->Add(row, 0, wxALIGN_CENTER_HORIZONTAL | wxLEFT | wxRIGHT, margin);
+        main_sizer->AddSpacer(FromDIP(16));
+
+        // One row per slot, in slot order
+        struct Slot { DecomposeBaseColor base; const wxColour& color; };
+        const Slot slots[] = {
+            {DecomposeBaseColor::Cyan, CMYKW_CYAN},       {DecomposeBaseColor::Magenta, CMYKW_MAGENTA},
+            {DecomposeBaseColor::Yellow, CMYKW_YELLOW},   {DecomposeBaseColor::Black, CMYKW_BLACK},
+            {DecomposeBaseColor::White, CMYKW_WHITE},
+        };
+        auto* card = create_rounded_result_card(this);
+        auto* card_sizer = new wxBoxSizer(wxVERTICAL);
+        const int swatch_sz = FromDIP(32);
+        for (size_t i = 0; i < sizeof(slots) / sizeof(slots[0]); ++i) {
+            const int slot = static_cast<int>(i) + 1;
+            int ratio = 0;
+            for (const DecomposeComponent& comp : result.components)
+                if (comp.filament_index == slot)
+                    ratio = comp.ratio;
+            // Slots that are not part of the mix stay in the list, so it is clear what each slot holds.
+            const wxColour text_color = StateColor::darkModeColorFor(ratio > 0 ? COLOR_TEXT_DARK : COLOR_LABEL_GREY);
+
+            auto* slot_row = new wxBoxSizer(wxHORIZONTAL);
+            auto* swatch = create_color_swatch(card, slots[i].color, swatch_sz, slot);
+            m_swatch_colors.emplace_back(swatch, slots[i].color);
+            slot_row->Add(swatch, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(14));
+            auto* name = new wxStaticText(card, wxID_ANY, decompose_base_color_display(slots[i].base));
+            name->SetFont(Label::Body_14);
+            name->SetForegroundColour(text_color);
+            name->SetBackgroundColour(box_bg);
+            slot_row->Add(name, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(24));
+            auto* percent = new wxStaticText(card, wxID_ANY, wxString::Format("%d%%", ratio),
+                                             wxDefaultPosition, wxDefaultSize, wxALIGN_RIGHT);
+            percent->SetFont(Label::Head_14);
+            percent->SetForegroundColour(text_color);
+            percent->SetBackgroundColour(box_bg);
+            percent->SetMinSize(wxSize(FromDIP(48), -1));
+            slot_row->Add(percent, 0, wxALIGN_CENTER_VERTICAL);
+            card_sizer->Add(slot_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(14));
+        }
+        card_sizer->AddSpacer(FromDIP(14));
+        card->SetSizer(card_sizer);
+        main_sizer->Add(card, 0, wxEXPAND | wxLEFT | wxRIGHT, margin);
+
+        auto* hint = new wxStaticText(this, wxID_ANY,
+            _L("Load filaments of these colors into slots 1 to 5 and use layer dithering for full-color printing."));
+        hint->SetFont(Label::Body_13);
+        hint->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#6B6A6A")));
+        hint->SetMinSize(wxSize(FromDIP(100), -1));
+        main_sizer->Add(hint, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, margin);
+
+        auto* ok = new Button(this, _L("OK"));
+        ok->SetStyle(ButtonStyle::Confirm, ButtonType::Choice);
+        ok->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { EndModal(wxID_OK); });
+        main_sizer->AddSpacer(FromDIP(16));
+        main_sizer->Add(ok, 0, wxALIGN_RIGHT | wxLEFT | wxRIGHT | wxBOTTOM, margin);
+
+        SetSizer(main_sizer);
+        SetMinSize(wxSize(FromDIP(477), -1));
+        Fit();
+        // Wrap the hint to the width of the dialog, then fit again for its height.
+        hint->Wrap(GetClientSize().x - 2 * margin);
+        Fit();
+    }
+
+    // A rounded card with a caption, a swatch and its RGB value.
+    wxSizer* create_color_card(const wxString& caption, const wxColour& color)
+    {
+        const wxColour box_bg = StateColor::darkModeColorFor(*wxWHITE);
+        auto* col = new wxBoxSizer(wxVERTICAL);
+        col->Add(create_result_caption(this, caption), 0, wxALIGN_CENTER_HORIZONTAL | wxBOTTOM, FromDIP(8));
+
+        auto* card = create_rounded_result_card(this);
+        auto* inner = new wxBoxSizer(wxVERTICAL);
+        auto* swatch = create_color_swatch(card, color, FromDIP(32));
+        m_swatch_colors.emplace_back(swatch, color);
+        inner->Add(swatch, 0, wxALIGN_CENTER_HORIZONTAL | wxBOTTOM, FromDIP(4));
+        auto* rgb = new wxStaticText(card, wxID_ANY, format_rgb(color));
+        rgb->SetFont(Label::Body_12);
+        rgb->SetForegroundColour(StateColor::darkModeColorFor(COLOR_LABEL_GREY));
+        rgb->SetBackgroundColour(box_bg);
+        inner->Add(rgb, 0, wxALIGN_CENTER_HORIZONTAL);
+        auto* card_sizer = new wxBoxSizer(wxVERTICAL);
+        card_sizer->Add(inner, 0, wxALL, FromDIP(12));
+        card->SetSizer(card_sizer);
+        col->Add(card, 0, wxALIGN_CENTER_HORIZONTAL);
+        return col;
+    }
+
+    std::vector<std::pair<wxPanel*, wxColour>> m_swatch_colors;
+};
+
+} // namespace
+
+void show_cmykw_mix_dialog(wxWindow* parent, const ColorDecomposeResult& result, const wxColour& target_color)
+{
+    CmykwMixDialog dlg(parent, result, target_color);
+    dlg.ShowModal();
+}
+
 } // namespace GUI
 } // namespace Slic3r

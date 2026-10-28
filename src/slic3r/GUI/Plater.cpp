@@ -5376,23 +5376,6 @@ void Sidebar::delete_mixed_filament_at(size_t panel_idx)
     delete_filament(cfg_idx, -1);
 }
 
-// CMYK+W only lists the channel mix; it does not create a mixed filament.
-static void show_cmykw_mix(wxWindow* parent, const ColorDecomposeResult& result, const wxColour& target_color)
-{
-    wxString mix;
-    for (const DecomposeComponent& comp : result.components) {
-        // TRN %1% is a base color name (Cyan, Magenta, Yellow, Black or White), %2% its filament slot number, %3% its share, for example 40%
-        mix += format_wxstr(_L("%1% (slot %2%): %3%"), decompose_base_color_display(comp.base_color), comp.filament_index,
-                          wxString::Format("%d%%", comp.ratio)) + "\n";
-    }
-
-    // TRN %1% is a color in the form #RRGGBB, %2% is the list of colors with their share, one per line
-    const wxString text = format_wxstr(_L("Target color: %1%\n\nCMYK+W mix for layer dithering. Load cyan, magenta, yellow, black and white filaments into slots 1 to 5:\n\n%2%"),
-                                       target_color.GetAsString(wxC2S_HTML_SYNTAX), mix);
-    MessageDialog dlg(parent, text, _L("CMYK+W"), wxOK | wxICON_INFORMATION);
-    dlg.ShowModal();
-}
-
 void Sidebar::decompose_filament_color(int filament_idx)
 {
     if (filament_idx == kSidebarContextMenuFilamentId)
@@ -5447,7 +5430,7 @@ void Sidebar::decompose_filament_color(int filament_idx)
         if (!prepare_decompose_mixed_result(dialog_result, static_cast<size_t>(filament_idx), source_physical_idx,
                                             color_strs, decompose_types, physical_config_indices, mixed_result, missing_components)) {
             if (dialog_result.mode == DecomposeMode::CMYKW)
-                show_cmykw_mix(this, dialog_result, target_color);
+                show_cmykw_mix_dialog(this, dialog_result, target_color);
             return;
         }
 

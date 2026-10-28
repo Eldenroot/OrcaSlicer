@@ -182,6 +182,10 @@ private:
     Button*                     m_btn_cancel{nullptr};
 };
 
+// Shows the CMYK+W mix of target_color, which creates no mixed filament: the colors and the share of
+// the five fixed filament slots.
+void show_cmykw_mix_dialog(wxWindow* parent, const ColorDecomposeResult& result, const wxColour& target_color);
+
 } // namespace GUI
 } // namespace Slic3r
 
