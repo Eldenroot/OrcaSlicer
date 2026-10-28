@@ -34,7 +34,8 @@ enum class DecomposeBaseColor {
     White,
     Red,
     Green,
-    Blue
+    Blue,
+    Black   // CMYKW
 };
 
 struct DecomposeComponent {
@@ -105,8 +106,8 @@ private:
     };
 
     ColorDecomposeResult        m_result;
-    std::array<ColorDecomposeResult, 3> m_mode_results;
-    std::array<ModeCardControls, 3>     m_mode_cards;
+    std::array<ColorDecomposeResult, 4> m_mode_results;  // MaterialList, CMYW, RYBW, CMYKW
+    std::array<ModeCardControls, 4>     m_mode_cards;
     int                         m_filament_idx{-1};
     wxColour                    m_target_color;
     std::vector<std::string>    m_physical_colors;
@@ -132,10 +133,12 @@ private:
     wxPanel*                    m_card_material_list{nullptr};
     wxPanel*                    m_card_cmyw{nullptr};
     wxPanel*                    m_card_rybw{nullptr};
+    wxPanel*                    m_card_cmykw{nullptr};
     wxPanel*                    m_arb_column_panel{nullptr};
     CheckBox*                   m_chk_material_list{nullptr};
     CheckBox*                   m_chk_cmyw{nullptr};
     CheckBox*                   m_chk_rybw{nullptr};
+    CheckBox*                   m_chk_cmykw{nullptr};
     DecomposeMode               m_selected_mode{DecomposeMode::MaterialList};
 
     // Hint shown when no mode card is visible

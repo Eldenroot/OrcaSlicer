@@ -48,6 +48,7 @@ const char* decompose_base_color_en(DecomposeBaseColor color)
     case DecomposeBaseColor::Magenta: return "Magenta";
     case DecomposeBaseColor::Yellow:  return "Yellow";
     case DecomposeBaseColor::White:   return "White";
+    case DecomposeBaseColor::Black:   return "Black";
     case DecomposeBaseColor::Red:     return "Red";
     case DecomposeBaseColor::Green:   return "Green";
     case DecomposeBaseColor::Blue:    return "Blue";
@@ -62,6 +63,7 @@ wxString decompose_base_color_display(DecomposeBaseColor color)
     case DecomposeBaseColor::Magenta: return _L("Magenta");
     case DecomposeBaseColor::Yellow:  return _L("Yellow");
     case DecomposeBaseColor::White:   return _L("White");
+    case DecomposeBaseColor::Black:   return _L("Black");
     case DecomposeBaseColor::Red:     return _L("Red");
     case DecomposeBaseColor::Green:   return _L("Green");
     case DecomposeBaseColor::Blue:    return _L("Blue");
@@ -301,6 +303,9 @@ bool prepare_decompose_mixed_result(
     if (result.components.size() < 2) {
         return false;
     }
+    // CMYKW shows a layer-dithering breakdown (informational) — no mixed filament is created.
+    if (result.mode == DecomposeMode::CMYKW)
+        return false;
 
     const bool standard_mode = result.mode == DecomposeMode::CMYW || result.mode == DecomposeMode::RYBW;
     std::string basic_type;
