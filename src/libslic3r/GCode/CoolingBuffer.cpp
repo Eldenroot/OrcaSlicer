@@ -1087,7 +1087,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
             !fan_speed_change_requests[CoolingLine::TYPE_INTERNAL_BRIDGE_FAN_START] &&
             !fan_speed_change_requests[CoolingLine::TYPE_SUPPORT_INTERFACE_FAN_START] &&
             !fan_speed_change_requests[CoolingLine::TYPE_IRONING_FAN_START]) {
-            const float pre_start_fan_time = EXTRUDER_CONFIG(pre_start_fan_time);
+            const float pre_start_fan_time = m_config.pre_start_fan_time.get_at(m_current_extruder);
             if (pre_start_fan_time > 0.f && overhang_fan_starts_within(line_idx + 1, pre_start_fan_time)) {
                 fan_speed_change_requests[CoolingLine::TYPE_OVERHANG_FAN_START] = true;
                 need_set_fan = true;
