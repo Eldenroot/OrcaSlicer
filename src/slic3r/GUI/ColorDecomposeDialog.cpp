@@ -354,13 +354,13 @@ wxBoxSizer* ColorDecomposeDialog::create_filament_selector()
     return sizer;
 }
 
-static wxPanel* create_color_swatch(wxWindow* parent, const wxColour& color, int size)
+static wxPanel* create_color_swatch(wxWindow* parent, const wxColour& color, int size, int filament_id = 0)
 {
     auto* panel = new wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(size, size));
     panel->SetBackgroundColour(color);
     panel->SetMinSize(wxSize(size, size));
     panel->SetBackgroundStyle(wxBG_STYLE_PAINT);
-    panel->Bind(wxEVT_PAINT, [panel](wxPaintEvent&) {
+    panel->Bind(wxEVT_PAINT, [panel, filament_id](wxPaintEvent&) {
         wxAutoBufferedPaintDC dc(panel);
         wxSize sz = panel->GetClientSize();
         wxColour c = panel->GetBackgroundColour();
@@ -377,6 +377,14 @@ static wxPanel* create_color_swatch(wxWindow* parent, const wxColour& color, int
             dc.SetPen(wxPen(light_mode ? wxColour(130, 130, 128) : wxColour(207, 207, 207),
                             1, wxPENSTYLE_SOLID));
             dc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
+        }
+        if (filament_id > 0) {
+            // Filament number, in the color that stays readable on the swatch.
+            const wxString text = wxString::Format("%d", filament_id);
+            dc.SetFont(Label::Body_12);
+            dc.SetTextForeground(c.GetLuminance() < 0.51 ? *wxWHITE : *wxBLACK);
+            const wxSize ts = dc.GetTextExtent(text);
+            dc.DrawText(text, (sz.GetWidth() - ts.x) / 2, (sz.GetHeight() - ts.y) / 2);
         }
     });
     return panel;
@@ -801,6 +809,18 @@ void ColorDecomposeDialog::set_cmykw_enabled(bool enabled)
     Fit();
 }
 
+void ColorDecomposeDialog::set_show_filament_ids(bool show)
+{
+    m_show_filament_ids = show;
+    update_mode_card_contents();
+}
+
+DecomposePreviewIds ColorDecomposeDialog::preview_ids_for(const ColorDecomposeResult& result) const
+{
+    return preview_decompose_filament_ids(result, m_filament_idx, m_current_filament_count,
+                                          m_physical_colors, m_filament_types, m_physical_config_indices);
+}
+
 void ColorDecomposeDialog::update_ok_button_state()
 {
     if (!m_btn_ok) return;
@@ -841,9 +861,15 @@ void ColorDecomposeDialog::update_mode_card_content(DecomposeMode mode)
         w->SetCursor(wxCursor(wxCURSOR_HAND));
     };
 
+    // The Material List card shows the sidebar numbers of its filaments, CMYK+W its fixed slots.
+    DecomposePreviewIds preview;
+    if (m_show_filament_ids && (mode == DecomposeMode::MaterialList || mode == DecomposeMode::CMYKW))
+        preview = preview_ids_for(m_mode_results[mode_index(mode)]);
+
     for (size_t i = 0; i < count; ++i) {
         auto* col = new wxBoxSizer(wxVERTICAL);
-        auto* swatch = create_color_swatch(card, components[i].colour, swatch_sz);
+        const int filament_id = i < preview.component_ids.size() ? preview.component_ids[i] : 0;
+        auto* swatch = create_color_swatch(card, components[i].colour, swatch_sz, filament_id);
         bind_select(swatch);
         col->Add(swatch, 0, wxALIGN_CENTER_HORIZONTAL);
         auto* ratio_text = new wxStaticText(card, wxID_ANY, wxString::Format("%d%%", components[i].ratio));

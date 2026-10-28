@@ -51,6 +51,14 @@ struct ColorDecomposeResult {
     std::vector<DecomposeComponent> components;
 };
 
+// Predicted 1-based filament IDs shown on the decompose dialog swatches.
+// 0 means "no ID".
+struct DecomposePreviewIds {
+    int              source_id{0};
+    int              mixed_id{0};
+    std::vector<int> component_ids;
+};
+
 class ColorDecomposeDialog : public DPIDialog
 {
 public:
@@ -72,6 +80,10 @@ public:
     // virtual physical filaments), instead of the project-config based default
     // that cannot see not-yet-committed virtual base colors.
     void set_missing_physical_calculator(std::function<size_t(const ColorDecomposeResult&)> fn);
+
+    // The filament numbers on the swatches follow the sidebar order of the project. Callers whose
+    // numbering differs (the texture import) turn them off.
+    void set_show_filament_ids(bool show);
     // CMYK+W only lists a mix and creates no mixed filament; callers that need one must turn it off.
     void set_cmykw_enabled(bool enabled);
 
@@ -95,6 +107,7 @@ private:
     void update_ok_button_state();
     void update_filament_limit_warning();
     void update_basic_support_warning();
+    DecomposePreviewIds preview_ids_for(const ColorDecomposeResult& result) const;
 
     void compute_decomposition();
 
@@ -138,6 +151,7 @@ private:
     wxPanel*                    m_card_rybw{nullptr};
     wxPanel*                    m_card_cmykw{nullptr};
     bool                        m_cmykw_enabled{true};
+    bool                        m_show_filament_ids{true};
     wxPanel*                    m_arb_column_panel{nullptr};
     CheckBox*                   m_chk_material_list{nullptr};
     CheckBox*                   m_chk_cmyw{nullptr};
