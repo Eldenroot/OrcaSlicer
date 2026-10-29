@@ -1067,6 +1067,7 @@ void AMSMaterialsSetting::set_color(wxColour color)
     m_clr_picker->set_color(color);
 
     m_clr_name->SetLabelText(slot_color_label(ams_filament_id, {color}, m_clr_picker->ctype));
+    if (m_clr_picker->GetParent()) m_clr_picker->GetParent()->Layout();
 }
 
 void AMSMaterialsSetting::set_empty_color(wxColour color)
@@ -1083,8 +1084,10 @@ void AMSMaterialsSetting::set_colors(std::vector<wxColour> colors)
     //m_clrData->SetColour(color);
     m_clr_picker->set_colors(colors);
 
-    if (!colors.empty())
+    if (!colors.empty()) {
         m_clr_name->SetLabelText(slot_color_label(ams_filament_id, colors, m_clr_picker->ctype));
+        if (m_clr_picker->GetParent()) m_clr_picker->GetParent()->Layout();
+    }
 }
 
 void AMSMaterialsSetting::set_ctype(int ctype)
