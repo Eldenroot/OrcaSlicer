@@ -1,5 +1,6 @@
 #include "AMSMaterialsSetting.hpp"
 #include "ColorPickerDialog.hpp"
+#include "EncodedFilament.hpp"
 #include "FilamentBitmapUtils.hpp"
 #include "libslic3r/Color.hpp"
 #include <optional>
@@ -20,6 +21,9 @@
 #include <iomanip>
 #include <wx/anybutton.h>
 #include <wx/checklst.h>
+#include <wx/colour.h>
+#include <wx/string.h>
+#include <vector>
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include "slic3r/GUI/Widgets/Button.hpp"
 #include "slic3r/GUI/Widgets/DropDown.hpp"
@@ -199,6 +203,40 @@ static std::vector<ColorPickerPopup::ColorItem> collect_preset_color_items(const
     }
 
     return items;
+}
+
+// Name of the slot colour from the Bambu colour catalogue, with its product code and the RGB value(s).
+// ams_filament_id is our OF id; the catalogue (filaments_color_codes.json, downloaded from Bambu) is keyed by the
+// printer's own ids, so translate for this lookup only.
+static wxString slot_color_label(const std::string& ams_filament_id, const std::vector<wxColour>& colors, int ctype)
+{
+    wxString name;
+    wxString code;
+    if (auto* clr_query = GUI::wxGetApp().get_filament_color_code_query()) {
+        FilamentColor fila_color;
+        for (const wxColour& color : colors)
+            fila_color.m_colors.insert(color);
+        fila_color.EndSet(ctype);
+        auto* agent = GUI::wxGetApp().getAgent();
+        if (auto* info = clr_query->GetFilaInfo(agent ? agent->from_orca_filament_id(ams_filament_id) : ams_filament_id, fila_color)) {
+            name = info->GetFilaColorName();
+            code = info->GetFilaColorCode();
+        }
+    }
+
+    wxString rgb;
+    for (const wxColour& color : colors) {
+        if (!rgb.IsEmpty())
+            rgb += ", ";
+        rgb += color.GetAsString(wxC2S_HTML_SYNTAX);
+    }
+
+    wxString label = name;
+    if (!label.IsEmpty() && !code.IsEmpty())
+        label += " (" + code + ")";
+    if (!label.IsEmpty() && !rgb.IsEmpty())
+        label += " ";
+    return label + rgb;
 }
 
 AMSMaterialsSetting::AMSMaterialsSetting(wxWindow *parent, wxWindowID id)
@@ -1028,14 +1066,7 @@ void AMSMaterialsSetting::set_color(wxColour color)
     m_clr_picker->is_empty(false);
     m_clr_picker->set_color(color);
 
-    FilamentColor fila_color;
-    fila_color.m_colors.insert(color);
-    fila_color.EndSet(m_clr_picker->ctype);
-    auto clr_query = GUI::wxGetApp().get_filament_color_code_query();
-    // ams_filament_id is our OF id; GetFilaColorName looks up filaments_color_codes.json,
-    // downloaded from Bambu and keyed by the printer's own ids, so translate for this lookup only.
-    auto* agent = GUI::wxGetApp().getAgent();
-    m_clr_name->SetLabelText(clr_query->GetFilaColorName(agent ? agent->from_orca_filament_id(ams_filament_id) : ams_filament_id, fila_color));
+    m_clr_name->SetLabelText(slot_color_label(ams_filament_id, {color}, m_clr_picker->ctype));
 }
 
 void AMSMaterialsSetting::set_empty_color(wxColour color)
@@ -1053,16 +1084,7 @@ void AMSMaterialsSetting::set_colors(std::vector<wxColour> colors)
     m_clr_picker->set_colors(colors);
 
     if (!colors.empty())
-    {
-        FilamentColor fila_color;
-        for (const auto& clr : colors) { fila_color.m_colors.insert(clr); }
-        fila_color.EndSet(m_clr_picker->ctype);
-        auto clr_query = GUI::wxGetApp().get_filament_color_code_query();
-        // ams_filament_id is our OF id; GetFilaColorName looks up filaments_color_codes.json,
-        // downloaded from Bambu and keyed by the printer's own ids, so translate for this lookup only.
-        auto* agent = GUI::wxGetApp().getAgent();
-        m_clr_name->SetLabelText(clr_query->GetFilaColorName(agent ? agent->from_orca_filament_id(ams_filament_id) : ams_filament_id, fila_color));
-    }
+        m_clr_name->SetLabelText(slot_color_label(ams_filament_id, colors, m_clr_picker->ctype));
 }
 
 void AMSMaterialsSetting::set_ctype(int ctype)
