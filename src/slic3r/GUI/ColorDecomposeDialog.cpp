@@ -519,7 +519,7 @@ static wxWindow* create_result_component_swatch(wxWindow* parent, const wxColour
         const int pad_x = panel->FromDIP(3);
         const int pad_y = panel->FromDIP(1);
         const int bw = ts.x + pad_x * 2;
-        const int bh = wxMax(ts.y + pad_y * 2, panel->FromDIP(10));
+        const int bh = std::max(ts.y + pad_y * 2, panel->FromDIP(10));
         dc.SetPen(*wxTRANSPARENT_PEN);
         dc.SetBrush(wxBrush(StateColor::darkModeColorFor(COLOR_BRAND)));
         dc.DrawRoundedRectangle(0, 0, bw, bh, panel->FromDIP(6));
