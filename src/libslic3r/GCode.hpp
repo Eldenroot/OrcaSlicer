@@ -16,6 +16,7 @@
 #include "GCode/CoolingBuffer.hpp"
 #include "GCode/ExclusionVolumeTravelAvoidance.hpp"
 #include "GCode/FanMover.hpp"
+#include "GCode/HeightSlowdown.hpp"
 #include "GCode/RetractWhenCrossingPerimeters.hpp"
 #include "GCode/SpiralVase.hpp"
 #include "GCode/ToolOrdering.hpp"
@@ -972,6 +973,7 @@ protected:
     void update_layer_related_config(int layer_id);
 
     double      calc_max_volumetric_speed(const double layer_height, const double line_width, const std::string co_str);
+    HeightSlowdownFactors height_slowdown_factors() const;
     std::string _extrude(const ExtrusionPath &path, const std::string &path_description = "", double speed = -1);
     bool _needSAFC(const ExtrusionPath &path);
     void print_machine_envelope(GCodeOutputStream& file, Print& print);

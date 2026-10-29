@@ -11,6 +11,7 @@
 #include "GCode/PressureEqualizer.hpp"
 #include "GCode/SmallAreaInfillFlowCompensator.hpp"
 #include "GCode/CoolingBuffer.hpp"
+#include "GCode/HeightSlowdown.hpp"
 #include "GCode/AdaptivePAProcessor.hpp"
 #include "CustomGCode.hpp"
 #include "GCode/TimelapsePosPicker.hpp"
@@ -9188,6 +9189,23 @@ static bool overhang_fan_active(float overlap, int overhang_fan_threshold, Extru
     return overlap_threshold >= 0.f && overlap <= overlap_threshold;
 }
 
+// Height slowdown factors for the layer being printed. Model layers are ramped from the first layer after
+// `height_slowdown_initial_layers` to the last layer of the object; support and raft layers follow their print_z.
+HeightSlowdownFactors GCode::height_slowdown_factors() const
+{
+    if (!m_config.automatic_height_slowdown.value || m_layer == nullptr || m_config.spiral_mode.value ||
+        !m_calib_config.keys().empty())
+        return {};
+
+    const LayerPtrs &layers  = m_layer->object()->layers();
+    const size_t     initial = size_t(std::max(m_config.height_slowdown_initial_layers.value, 0));
+    if (layers.size() <= initial)
+        return {};
+
+    return height_slowdown_factors(m_layer->print_z, layers[initial]->print_z, layers.back()->print_z,
+                                   m_config.height_slowdown_start_speed.value / 100., m_config.height_slowdown_end_speed.value / 100.);
+}
+
 std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_description, double speed)
 {
     std::string gcode;
@@ -9211,6 +9229,7 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     const bool path_on_first_layer = this->on_first_layer(path_point_mm);
 
     const ExtrusionPathSloped* sloped = dynamic_cast<const ExtrusionPathSloped*>(&path);
+    const HeightSlowdownFactors height_slowdown = this->height_slowdown_factors();
 
     const auto get_sloped_z = [&sloped, this](double z_ratio) {
         const auto height = sloped->height;
@@ -9307,7 +9326,7 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
         } else {
             acceleration = m_config.default_acceleration.get_at(nozzle);
         }
-        acceleration_i = (unsigned int)floor(acceleration + 0.5);
+        acceleration_i = (unsigned int)floor((acceleration * height_slowdown.motion) + 0.5);
     }
 
     // adjust X Y jerk
@@ -9546,7 +9565,22 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
         m_resonance_avoidance = true;
     }
 }
-    
+
+    // Slow down by model height. Speeding up is limited by the volumetric flow and machine speed limits and is
+    // skipped for bridges and paths that move in Z, as those are limited for quality rather than throughput.
+    if (height_slowdown.speed < 1.) {
+        speed *= height_slowdown.speed;
+    } else if (height_slowdown.speed > 1. && !is_bridge(path.role()) && sloped == nullptr && !path.z_contoured) {
+        double boosted = speed * height_slowdown.speed;
+        if (filament_max_volumetric_speed > 0)
+            boosted = std::min(boosted, filament_max_volumetric_speed / _mm3_per_mm);
+        const size_t limit_idx = size_t(m_writer.filament()->extruder_id()) * 2;
+        for (const ConfigOptionFloats *limit : {&m_config.machine_max_speed_x, &m_config.machine_max_speed_y})
+            if (limit_idx < limit->values.size() && limit->values[limit_idx] > 0)
+                boosted = std::min(boosted, limit->values[limit_idx]);
+        speed = std::max(speed, boosted);
+    }
+
     bool requires_segmented_extrusion = false;
     // A uniform fan state can be represented by the normal path-wide marker. Only a
     // transition within the path requires point-by-point emission.
@@ -9625,6 +9659,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
             if (!NOZZLE_CONFIG(enable_overhang_speed))
                 for (ProcessedPoint &point : new_points)
                     point.speed = speed;
+            if (height_slowdown.speed < 1.)
+                for (ProcessedPoint &point : new_points)
+                    point.speed = std::min(point.speed, float(speed));
             requires_segmented_extrusion = std::any_of(new_points.begin(), new_points.end(),
                 [speed](const ProcessedPoint &point) { return fabs(double(point.speed) - speed) > 1; }); // Ignore small speed variations (under 1mm/sec)
             if (FILAMENT_CONFIG(enable_overhang_bridge_fan) && m_enable_cooling_markers && fan_overlap_threshold >= 0.f &&
