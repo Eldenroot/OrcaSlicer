@@ -473,9 +473,11 @@ void DevFilaSystemParser::ParseV1_0(const json& jj, MachineObject* obj, DevFilaS
                     /*ams info*/
                     std::set<int> binded_extruder_set;
                     std::optional<DevFilaSwitch::SwitchPos> binded_switcher_pos;
+                    auto remain_estimate_version = DevAms::RemainEstimateVersion::Legacy;
                     if (it->contains("info")) {
                         const std::string& info = (*it)["info"].get<std::string>();
                         type_id = DevUtil::get_flag_bits(info, 0, 4);
+                        remain_estimate_version = static_cast<DevAms::RemainEstimateVersion>(DevUtil::get_flag_bits(info, 30, 2));
                         extuder_id = DevUtil::get_flag_bits(info, 8, 4);
                         if (extuder_id == 0xE && obj->GetFilaSwitch()->IsInstalled()) {
                             int bind_switch_in = DevUtil::get_flag_bits(info, 24, 4);
@@ -538,6 +540,7 @@ void DevFilaSystemParser::ParseV1_0(const json& jj, MachineObject* obj, DevFilaS
 
                     /*set ams type flag*/
                     curr_ams->SetAmsType(type_id);
+                    curr_ams->m_remain_estimate_version = remain_estimate_version;
 
                     DevJsonValParser::ParseVal(*it, "display_name", curr_ams->m_display_name, std::string());
 
@@ -843,6 +846,9 @@ void DevFilaSystemParser::ParseV1_0(const json& jj, MachineObject* obj, DevFilaS
                             }
 
                             std::string temp = tray_it->dump();
+
+                            if (tray_it->contains("state") && (*tray_it)["state"].is_number_integer())
+                                curr_tray->remain_fetch_status = static_cast<DevAmsTray::RemainFetchStatus>(((*tray_it)["state"].get<int>() >> 5) & 0x7);
 
                             if (tray_it->contains("cali_idx"))
                             {
