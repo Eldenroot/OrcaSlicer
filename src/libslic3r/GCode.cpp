@@ -9189,12 +9189,12 @@ static bool overhang_fan_active(float overlap, int overhang_fan_threshold, Extru
     return overlap_threshold >= 0.f && overlap <= overlap_threshold;
 }
 
-// Height slowdown factors for the layer being printed. Model layers are ramped from the first layer after
-// `height_slowdown_initial_layers` to the last layer of the object; support and raft layers follow their print_z.
-HeightSlowdownFactors GCode::height_slowdown_factors() const
+// Height slowdown factors for a path of the layer being printed. The ramp runs from the first layer after
+// `height_slowdown_initial_layers` to the last layer of the object. Skirt, brim and support keep their normal values.
+HeightSlowdownFactors GCode::height_slowdown_factors(ExtrusionRole role) const
 {
     if (!m_config.automatic_height_slowdown.value || m_layer == nullptr || m_config.spiral_mode.value ||
-        !m_calib_config.keys().empty())
+        !m_calib_config.keys().empty() || role == erSkirt || role == erBrim || is_support(role))
         return {};
 
     const LayerPtrs &layers  = m_layer->object()->layers();
@@ -9229,7 +9229,7 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     const bool path_on_first_layer = this->on_first_layer(path_point_mm);
 
     const ExtrusionPathSloped* sloped = dynamic_cast<const ExtrusionPathSloped*>(&path);
-    const HeightSlowdownFactors height_slowdown = this->height_slowdown_factors();
+    const HeightSlowdownFactors height_slowdown = this->height_slowdown_factors(path.role());
 
     const auto get_sloped_z = [&sloped, this](double z_ratio) {
         const auto height = sloped->height;
@@ -9240,6 +9240,16 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     if (sloped != nullptr && !sloped->is_flat()) {
         auto target_z = get_sloped_z(sloped->slope_begin.z_ratio);
         slope_need_z_travel = m_writer.will_move_z(target_z);
+    }
+    // The travel to the path and the Z-hop descent in unretract() are slowed together with the path.
+    const std::vector<double> normal_travel_speed   = m_writer.config.travel_speed.values;
+    const std::vector<double> normal_travel_speed_z = m_writer.config.travel_speed_z.values;
+    if (height_slowdown.motion < 1.) {
+        for (double &v : m_writer.config.travel_speed.values)
+            v *= height_slowdown.motion;
+        for (double &v : m_writer.config.travel_speed_z.values)
+            v *= height_slowdown.motion;
+        m_height_slowdown_travel_factor = height_slowdown.motion;
     }
     // Move to first point of extrusion path
     // path is 2D. But in slope lift case, lift z is done in travel_to function.
@@ -9289,6 +9299,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
 
     // compensate retraction
     gcode += this->unretract();
+    m_writer.config.travel_speed.values   = normal_travel_speed;
+    m_writer.config.travel_speed_z.values = normal_travel_speed_z;
+    m_height_slowdown_travel_factor       = 1.;
     m_config.apply(m_calib_config);
 
     // Orca: optimize for Klipper, set acceleration and jerk in one command
@@ -9571,14 +9584,20 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     if (height_slowdown.speed < 1.) {
         speed *= height_slowdown.speed;
     } else if (height_slowdown.speed > 1. && !is_bridge(path.role()) && sloped == nullptr && !path.z_contoured) {
-        double boosted = speed * height_slowdown.speed;
-        if (filament_max_volumetric_speed > 0)
-            boosted = std::min(boosted, filament_max_volumetric_speed / _mm3_per_mm);
+        // A speed-up needs known limits: a missing or zero limit keeps the normal speed.
         const size_t limit_idx = size_t(m_writer.filament()->extruder_id()) * 2;
-        for (const ConfigOptionFloats *limit : {&m_config.machine_max_speed_x, &m_config.machine_max_speed_y})
-            if (limit_idx < limit->values.size() && limit->values[limit_idx] > 0)
-                boosted = std::min(boosted, limit->values[limit_idx]);
-        speed = std::max(speed, boosted);
+        const auto   limit     = [limit_idx](const ConfigOptionFloats &option) {
+            return limit_idx < option.values.size() ? option.values[limit_idx] : 0.;
+        };
+        const double max_x = limit(m_config.machine_max_speed_x);
+        const double max_y = limit(m_config.machine_max_speed_y);
+        if (filament_max_volumetric_speed > 0 && _mm3_per_mm > 0 && max_x > 0 && max_y > 0) {
+            double boosted = std::min({speed * height_slowdown.speed, filament_max_volumetric_speed / _mm3_per_mm, max_x, max_y});
+            const double max_e = limit(m_config.machine_max_speed_e);
+            if (max_e > 0 && e_per_mm > 0)
+                boosted = std::min(boosted, max_e / e_per_mm);
+            speed = std::max(speed, boosted);
+        }
     }
 
     bool requires_segmented_extrusion = false;
@@ -10451,6 +10470,9 @@ std::string GCode::travel_to(const Point& point, ExtrusionRole role, std::string
         }
     }
     
+    if (acceleration_to_set > 0)
+        acceleration_to_set = (unsigned int) floor(acceleration_to_set * m_height_slowdown_travel_factor + 0.5);
+
     if (m_writer.get_gcode_flavor() == gcfKlipper) {
         gcode += m_writer.set_accel_and_jerk(acceleration_to_set, jerk_to_set);
     } else {

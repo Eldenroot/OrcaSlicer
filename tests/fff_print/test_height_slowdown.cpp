@@ -36,14 +36,14 @@ TEST_CASE("Height slowdown factors follow the ramp", "[HeightSlowdown]")
 
 namespace {
 
-// The highest feedrate of the extrusion moves of every layer, by Z.
-std::map<double, double> top_feedrate_per_layer(const PrintConfig &config, const std::string &gcode)
+// The highest feedrate of the extrusion moves (or of the travel moves) of every layer, by Z.
+std::map<double, double> top_feedrate_per_layer(const PrintConfig &config, const std::string &gcode, bool travel = false)
 {
     std::map<double, double> out;
     GCodeReader reader;
     reader.apply_config(config);
     reader.parse_buffer(gcode, [&out](GCodeReader &self, const GCodeReader::GCodeLine &line) {
-        if (line.extruding(self) && line.dist_XY(self) > 0.) {
+        if ((travel ? line.travel() : line.extruding(self)) && line.dist_XY(self) > 0.) {
             double &top = out[double(int(self.z() * 1000. + 0.5)) / 1000.];
             top         = std::max(top, double(line.new_F(self)));
         }
@@ -51,7 +51,7 @@ std::map<double, double> top_feedrate_per_layer(const PrintConfig &config, const
     return out;
 }
 
-std::map<double, double> slice_cube_feedrates(bool slowdown)
+std::map<double, double> slice_cube_feedrates(bool slowdown, bool travel = false)
 {
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     config.set_deserialize_strict({
@@ -65,7 +65,7 @@ std::map<double, double> slice_cube_feedrates(bool slowdown)
     const std::string gcode = slice({ cube(20) }, config);
     PrintConfig print_config;
     print_config.apply(config, true);
-    return top_feedrate_per_layer(print_config, gcode);
+    return top_feedrate_per_layer(print_config, gcode, travel);
 }
 
 } // namespace
@@ -83,4 +83,11 @@ TEST_CASE("Height slowdown slows the upper layers only when enabled", "[HeightSl
     for (int i = 0; i < 3; ++i, ++off_it, ++on_it)
         CHECK_THAT(on_it->second, WithinAbs(off_it->second, 1e-6));
     CHECK(on.rbegin()->second < 0.75 * off.rbegin()->second);
+
+    // Travel moves to the printed paths are slowed as well.
+    const std::map<double, double> travel_off = slice_cube_feedrates(false, true);
+    const std::map<double, double> travel_on  = slice_cube_feedrates(true, true);
+    REQUIRE_FALSE(travel_off.empty());
+    REQUIRE_FALSE(travel_on.empty());
+    CHECK(travel_on.rbegin()->second < 0.75 * travel_off.rbegin()->second);
 }

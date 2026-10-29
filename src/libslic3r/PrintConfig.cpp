@@ -4117,8 +4117,8 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Slow down by model height");
     def->category = L("Speed");
     def->tooltip = L("Gradually change the speed of each object as it gets taller. The speed starts at the start speed on the first layer after "
-                     "the layers that are not affected and reaches the end speed on the last layer of the object. Acceleration is slowed "
-                     "down the same way, but never sped up. Travel moves are not changed. "
+                     "the layers that are not affected and reaches the end speed on the last layer of the object. Acceleration and the travel "
+                     "moves to the printed paths are slowed down the same way, but never sped up. Support, skirt and brim are not changed. "
                      "Volumetric speed limits and the printer's speed limits still apply.");
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionBool(false));
