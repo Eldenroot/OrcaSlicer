@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include "test_helpers.hpp"
 
 using namespace Slic3r;
+using namespace Slic3r::Test;
 using Catch::Matchers::WithinAbs;
 
 TEST_CASE("Height slowdown factors follow the ramp", "[HeightSlowdown]")
@@ -42,7 +44,7 @@ std::map<double, double> top_feedrate_per_layer(const PrintConfig &config, const
     std::map<double, double> out;
     GCodeReader reader;
     reader.apply_config(config);
-    reader.parse_buffer(gcode, [&out](GCodeReader &self, const GCodeReader::GCodeLine &line) {
+    reader.parse_buffer(gcode, [&out, travel](GCodeReader &self, const GCodeReader::GCodeLine &line) {
         if ((travel ? line.travel() : line.extruding(self)) && line.dist_XY(self) > 0.) {
             double &top = out[double(int(self.z() * 1000. + 0.5)) / 1000.];
             top         = std::max(top, double(line.new_F(self)));

@@ -9197,13 +9197,13 @@ HeightSlowdownFactors GCode::height_slowdown_factors(ExtrusionRole role) const
         !m_calib_config.keys().empty() || role == erSkirt || role == erBrim || is_support(role))
         return {};
 
-    const LayerPtrs &layers  = m_layer->object()->layers();
-    const size_t     initial = size_t(std::max(m_config.height_slowdown_initial_layers.value, 0));
+    const ConstLayerPtrsAdaptor layers = m_layer->object()->layers();
+    const size_t initial = size_t(std::max(m_config.height_slowdown_initial_layers.value, 0));
     if (layers.size() <= initial)
         return {};
 
-    return height_slowdown_factors(m_layer->print_z, layers[initial]->print_z, layers.back()->print_z,
-                                   m_config.height_slowdown_start_speed.value / 100., m_config.height_slowdown_end_speed.value / 100.);
+    return Slic3r::height_slowdown_factors(m_layer->print_z, layers[initial]->print_z, layers.back()->print_z,
+                                           m_config.height_slowdown_start_speed.value / 100., m_config.height_slowdown_end_speed.value / 100.);
 }
 
 std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_description, double speed)
