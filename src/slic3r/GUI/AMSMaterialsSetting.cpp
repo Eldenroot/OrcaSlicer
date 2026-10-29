@@ -239,6 +239,31 @@ static wxString slot_color_label(const std::string& ams_filament_id, const std::
     return label + rgb;
 }
 
+// "Estimated remaining" of the filament in a slot, or an empty string when it is not known. Only the AMS of Bambu
+// spools with a tag report the remaining percentage, and not when the detection is off or for the external spool
+// and AMS Lite, which have no remaining value.
+static wxString estimated_remaining_text(MachineObject* obj, int ams_id, int slot_id)
+{
+    if (obj == nullptr || devPrinterUtil::IsVirtualSlot(ams_id) || !obj->GetFilaSystem()->IsDetectRemainEnabled())
+        return {};
+
+    const DevAms* ams = obj->GetFilaSystem()->GetAmsById(std::to_string(ams_id));
+    if (ams == nullptr || ams->GetAmsType() == DevAmsType::AMS_LITE)
+        return {};
+
+    const DevAmsTray* tray = obj->GetFilaSystem()->GetAmsTray(std::to_string(ams_id), std::to_string(slot_id));
+    if (tray == nullptr || !tray->is_tray_info_ready() || !DevFilaSystem::IsBBL_Filament(tray->tag_uid) ||
+        tray->remain < 0 || tray->remain > 100)
+        return {};
+
+    long total_weight = 0;
+    if (!wxString::FromUTF8(tray->weight.c_str()).ToLong(&total_weight) || total_weight <= 0)
+        return {};
+
+    // TRN: Remaining filament of a spool. The first number is the estimated remaining weight, the second the weight of a full spool, both in grams.
+    return wxString::Format(_L("Estimated remaining: ≈ %d g of %d g"), int(total_weight * tray->remain / 100), int(total_weight));
+}
+
 AMSMaterialsSetting::AMSMaterialsSetting(wxWindow *parent, wxWindowID id)
     : DPIDialog(parent, id, _L("AMS Materials Setting"), wxDefaultPosition, wxDefaultSize, wxCAPTION | wxCLOSE_BOX)
     , m_color_picker_popup(ColorPickerPopup(this))
@@ -492,6 +517,11 @@ void AMSMaterialsSetting::create_panel_normal(wxWindow* parent)
     m_panel_SN->Layout();
     m_panel_SN->Fit();
 
+    m_remaining_text = new wxStaticText(parent, wxID_ANY, wxEmptyString);
+    m_remaining_text->SetFont(::Label::Body_13);
+    m_remaining_text->SetForegroundColour(AMS_MATERIALS_SETTING_GREY800);
+    m_remaining_text->Hide();
+
     wxBoxSizer* m_tip_sizer = new wxBoxSizer(wxHORIZONTAL);
     m_tip_readonly = new Label(parent, "");
     m_tip_readonly->SetForegroundColour(*wxBLACK);
@@ -510,6 +540,8 @@ void AMSMaterialsSetting::create_panel_normal(wxWindow* parent)
     sizer->Add(0, 0, 0, wxTOP, FromDIP(5));
     sizer->Add(warning_text, 0, wxLEFT | wxRIGHT, FromDIP(20));
     sizer->Add(m_panel_SN, 0, wxLEFT, FromDIP(20));
+    sizer->Add(0, 0, 0, wxTOP, FromDIP(8));
+    sizer->Add(m_remaining_text, 0, wxLEFT, FromDIP(20));
     sizer->Add(0, 0, 0, wxTOP, FromDIP(24));
     sizer->Add(m_tip_sizer, 0, wxLEFT, FromDIP(20));
     parent->SetSizer(sizer);
@@ -1407,6 +1439,10 @@ void AMSMaterialsSetting::Popup(wxString filament, wxString sn, wxString temp_mi
     else {
         m_panel_SN->Hide();
     }
+
+    // Estimated remaining filament of a Bambu spool, from the remaining percentage the AMS reports.
+    m_remaining_text->SetLabel(estimated_remaining_text(obj, ams_id, slot_id));
+    m_remaining_text->Show(!m_remaining_text->GetLabel().IsEmpty());
 
     if (obj) {
         if (!m_is_third) {

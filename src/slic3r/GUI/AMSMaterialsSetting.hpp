@@ -206,6 +206,7 @@ protected:
     wxPanel *           m_panel_normal;
     wxPanel *           m_panel_SN;
     wxStaticText *      m_sn_number;
+    wxStaticText *      m_remaining_text{nullptr};
     wxStaticText *      warning_text;
     //wxPanel *           m_panel_body;
     wxStaticText *      m_title_filament;
