@@ -124,6 +124,13 @@ public:
     static wxColour decode_color(const std::string& color);
 
     std::optional<DevFilamentDryingPreset> get_ams_drying_preset() const;
+
+    // Tolerance of the remaining weight, +-5%.
+    static double get_fila_remain_tolerance() { return 0.05; }
+
+    // Remaining weight in grams: the value reported by the firmware, or else the remaining percentage of the
+    // spool weight. Empty if it is not known or the spool is empty.
+    std::optional<int> get_filament_remain_weight() const;
 };
 
 /**
@@ -373,6 +380,9 @@ public:
     // Map a linear tray index -> {ams_id, slot_id}. Includes the two virtual (external-spool) trays,
     // N3S single-slot units, and the A2L/N9 AMS-Lite-mixed layout (trays 24-27).
     std::map<int, DevAmsSlotId> GetTrayIndexMap();
+
+    // The linear tray index of an AMS slot, or -1 if there is none.
+    int GetTrayIdByAmsSlotId(int ams_id, int slot_id);
 
     // extruder
     int  GetExtruderIdByAmsId(const std::string& ams_id) const;

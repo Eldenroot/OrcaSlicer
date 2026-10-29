@@ -11,6 +11,7 @@
 #include <wx/colour.h>
 #include <string>
 #include <wx/string.h>
+#include <algorithm>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -87,6 +88,25 @@ void DevAmsTray::reset()
     remain_g            = -1;
 }
 
+
+std::optional<int> DevAmsTray::get_filament_remain_weight() const
+{
+    // Prefer the weight in grams reported by the firmware; -1 means it is not provided.
+    if (remain_g >= 0)
+        return remain_g > 0 ? std::optional<int>(remain_g) : std::nullopt;
+
+    if (weight.empty())
+        return std::nullopt;
+
+    try {
+        const int remain_weight = std::stoi(weight) * remain / 100;
+        if (remain_weight > 0)
+            return remain_weight;
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << " invalid filament weight " << weight;
+    }
+    return std::nullopt;
+}
 
 bool DevAmsTray::is_tray_info_ready() const
 {
@@ -326,6 +346,14 @@ std::string DevFilaSystem::GetNozzleFlowStringByAmsId(const std::string& ams_id)
     auto extruder_id = GetExtruderIdByAmsId(ams_id);
     auto nozzle      = GetOwner()->GetNozzleSystem()->GetExtNozzle(extruder_id);
     return DevNozzle::GetNozzleFlowTypeString(nozzle.GetNozzleFlowType());
+}
+
+int DevFilaSystem::GetTrayIdByAmsSlotId(int ams_id, int slot_id)
+{
+    const auto tray_index_map = GetTrayIndexMap();
+    const auto tray_it = std::find_if(tray_index_map.begin(), tray_index_map.end(),
+        [ams_id, slot_id](const auto& item) { return ams_id == item.second.first && slot_id == item.second.second; });
+    return tray_it != tray_index_map.end() ? tray_it->first : -1;
 }
 
 std::map<int, DevAmsSlotId> DevFilaSystem::GetTrayIndexMap()
