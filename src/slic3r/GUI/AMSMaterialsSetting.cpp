@@ -239,29 +239,37 @@ static wxString slot_color_label(const std::string& ams_filament_id, const std::
     return label + rgb;
 }
 
-// "Estimated remaining" of the filament in a slot, or an empty string when it is not known. Only the AMS of Bambu
-// spools with a tag report the remaining percentage, and not when the detection is off or for the external spool
-// and AMS Lite, which have no remaining value.
+// "Estimated remaining" of the filament in a slot of a Bambu spool, or an empty string when it is not known. It uses the
+// weight in grams reported by the firmware, or else the remaining percentage of a standard AMS with the detection on.
 static wxString estimated_remaining_text(MachineObject* obj, int ams_id, int slot_id)
 {
-    if (obj == nullptr || devPrinterUtil::IsVirtualSlot(ams_id) || !obj->GetFilaSystem()->IsDetectRemainEnabled())
+    if (obj == nullptr || devPrinterUtil::IsVirtualSlot(ams_id))
         return {};
 
     const DevAms* ams = obj->GetFilaSystem()->GetAmsById(std::to_string(ams_id));
-    if (ams == nullptr || ams->GetAmsType() == DevAmsType::AMS_LITE)
-        return {};
-
     const DevAmsTray* tray = obj->GetFilaSystem()->GetAmsTray(std::to_string(ams_id), std::to_string(slot_id));
-    if (tray == nullptr || !tray->is_tray_info_ready() || !DevFilaSystem::IsBBL_Filament(tray->tag_uid) ||
-        tray->remain < 0 || tray->remain > 100)
+    if (ams == nullptr || tray == nullptr || !tray->is_tray_info_ready() || !DevFilaSystem::IsBBL_Filament(tray->tag_uid))
         return {};
 
     long total_weight = 0;
-    if (!wxString::FromUTF8(tray->weight.c_str()).ToLong(&total_weight) || total_weight <= 0)
+    wxString::FromUTF8(tray->weight.c_str()).ToLong(&total_weight);
+
+    std::optional<int> remaining;
+    if (tray->remain_g >= 0) {
+        // The weight in grams reported by the firmware. Zero is a valid value for an empty spool.
+        remaining = tray->remain_g;
+    } else if (obj->GetFilaSystem()->IsDetectRemainEnabled() && ams->GetAmsType() != DevAmsType::AMS_LITE &&
+               tray->remain >= 0 && tray->remain <= 100 && total_weight > 0) {
+        remaining = int(total_weight * tray->remain / 100);
+    }
+    if (!remaining)
         return {};
 
-    // TRN: Remaining filament of a spool. The first number is the estimated remaining weight, the second the weight of a full spool, both in grams.
-    return wxString::Format(_L("Estimated remaining: ≈ %d g of %d g"), int(total_weight * tray->remain / 100), int(total_weight));
+    // TRN: Remaining filament of a spool, in grams. The first number is the estimated remaining weight, the second the weight of a full spool.
+    if (total_weight > 0)
+        return wxString::Format(_L("Estimated remaining: ≈ %d g of %d g"), *remaining, int(total_weight));
+    // TRN: Remaining filament of a spool, in grams, when the weight of a full spool is not known.
+    return wxString::Format(_L("Estimated remaining: ≈ %d g"), *remaining);
 }
 
 AMSMaterialsSetting::AMSMaterialsSetting(wxWindow *parent, wxWindowID id)

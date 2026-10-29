@@ -84,6 +84,7 @@ void DevAmsTray::reset()
     is_bbl              = false;
     hold_count          = 0;
     remain              = 0;
+    remain_g            = -1;
 }
 
 
@@ -788,6 +789,8 @@ void DevFilaSystemParser::ParseV1_0(const json& jj, MachineObject* obj, DevFilaS
                             {
                                 curr_tray->remain = -1;
                             }
+                            curr_tray->remain_g = tray_it->contains("remain_g") && (*tray_it)["remain_g"].is_number_integer()
+                                ? (*tray_it)["remain_g"].get<int>() : -1;
                             // The tray objects are reused across status updates. Reset this
                             // state when a previously empty slot receives a filament again.
                             curr_tray->is_slot_placeholder = tray_it->contains("tray_slot_placeholder");

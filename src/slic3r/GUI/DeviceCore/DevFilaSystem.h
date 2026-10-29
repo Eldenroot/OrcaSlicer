@@ -85,6 +85,7 @@ public:
     bool            is_slot_placeholder = false;  // Orca: True for empty tray slots from pull-mode agents
     int             hold_count = 0;
     int             remain = 0;         // filament remain: 0 ~ 100
+    int             remain_g = -1;      // remaining weight in grams reported by the firmware; -1 if not provided
 
 public:
     // operators
