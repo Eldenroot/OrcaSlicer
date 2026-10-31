@@ -48,6 +48,7 @@
 #include <wx/string.h>
 #include <wx/timer.h>
 #include <wx/utils.h>
+#include <nlohmann/json.hpp>
 
 namespace Slic3r { namespace GUI {
 namespace {
@@ -299,7 +300,7 @@ PluginDialogItem build_plugin_dialog_item(const PluginDescriptor& descriptor)
     item.display_name = descriptor.name;
     item.description  = !descriptor.is_metadata_valid() && descriptor.has_error() ?
                             descriptor.normalized_error() :
-                            (descriptor.description.empty() ? "No description." : descriptor.description);
+                            (descriptor.description.empty() ? _u8L("No description.") : descriptor.description);
     item.author       = descriptor.author;
     item.version      = descriptor.version;
     // The cloud merge overwrites `version` with the latest cloud version, so prefer the preserved local
@@ -639,9 +640,9 @@ nlohmann::json PluginsDialog::localized_strings() const
         {"no_plugins", _u8L("No plugins found")},
         {"no_match", _u8L("No plugins match \"%s\"")},
         {"source_mine", _u8L("Mine")},
-        {"source_subscribed", _u8L("Subscribed")},
+        {"source_subscribed", _u8L_CONTEXT("Subscribed", "Plugin")},
         {"source_orphaned", _u8L("Orphaned")},
-        {"source_local", _u8L("Local")},
+        {"source_local", _u8L_CONTEXT("Local", "Plugin")},
         {"mixed_capabilities", _u8L("Some plugin capabilities are enabled")},
         {"collapse_named", _u8L("Collapse %s capabilities")},
         {"expand_named", _u8L("Expand %s capabilities")},
@@ -1094,7 +1095,7 @@ bool PluginsDialog::install_cloud_plugin(const std::string& plugin_key, const st
     } catch (const std::exception& ex) {
         error = ex.what();
     } catch (...) {
-        error = "Unknown error";
+        error = _u8L("Unknown error");
     }
 
     if (!downloaded) {
@@ -1158,10 +1159,7 @@ void PluginsDialog::run_script_plugin_capability(const std::string& plugin_key, 
 {
     PluginManager& manager = PluginManager::instance();
 
-    std::string error;
-    ExecutionResult result;
-
-    auto complete_with_error = [this, &manager, &plugin_key](const std::string& plugin_error, const wxString& status_message) {
+    auto complete_with_error = [this, &manager, plugin_key](const std::string& plugin_error, const wxString& status_message) {
         const std::string normalized_error = plugin_error.empty() ? _u8L("Script plugin failed.") : plugin_error;
         if (!manager.set_plugin_error(plugin_key, normalized_error))
             BOOST_LOG_TRIVIAL(warning) << "Failed to record plugin error. plugin_key=" << plugin_key;
@@ -1177,32 +1175,53 @@ void PluginsDialog::run_script_plugin_capability(const std::string& plugin_key, 
         show_status(message, "error");
     };
 
+    // Always runs on the GUI thread. For a started invocation (sync `def execute` or `async def`)
+    // the runtime delivers it later; it is called inline here only when the launch itself failed.
+    auto finish = [this, alive = m_alive, plugin_key, &manager, complete_with_error](const ScriptCompletion& completion) {
+        if (!alive->load())
+            return;
+
+        // Cancelled by PluginManager (unload/shutdown): expected termination. Report neither an
+        // error nor a normal success, and do not touch the plugin's error/state.
+        if (completion.cancelled)
+            return;
+
+        if (!completion.error.empty()) {
+            complete_with_error(completion.error, wxString());
+            return;
+        }
+
+        const ExecutionResult& result = completion.result;
+
+        BOOST_LOG_TRIVIAL(info) << "Script plugin execution completed. plugin_key=" << plugin_key
+                                << " status=" << static_cast<int>(result.status) << " message=" << result.message
+                                << " data=" << result.data;
+
+        const bool failed = result.status == PluginResult::RecoverableError || result.status == PluginResult::FatalError;
+        if (failed) {
+            complete_with_error(result.message, wxString());
+            return;
+        }
+
+        manager.clear_plugin_error(plugin_key);
+        send_plugins();
+
+        const bool     skipped  = result.status == PluginResult::Skipped;
+        const wxString fallback = skipped ? _L("Script plugin skipped.") : _L("Script plugin finished.");
+        const wxString message  = result.message.empty() ? fallback : from_u8(result.message);
+        show_status(message, skipped ? "info" : "success");
+    };
+
+    PluginManager::ScriptLaunchResult launch;
     {
         wxBusyCursor busy;
-        result = manager.run_script_capability(plugin_key, capability_name, error);
+        launch = manager.launch_script_capability(plugin_key, capability_name, finish);
     }
 
-    if (!error.empty()) {
-        complete_with_error(error, wxString());
-        return;
-    }
-
-    BOOST_LOG_TRIVIAL(info) << "Script plugin execution completed. plugin_key=" << plugin_key
-                            << " status=" << static_cast<int>(result.status) << " message=" << result.message << " data=" << result.data;
-
-    const bool failed = result.status == PluginResult::RecoverableError || result.status == PluginResult::FatalError || !error.empty();
-    if (failed) {
-        complete_with_error(result.message, wxString());
-        return;
-    }
-
-    manager.clear_plugin_error(plugin_key);
-    send_plugins();
-
-    const bool     skipped  = result.status == PluginResult::Skipped;
-    const wxString fallback = skipped ? _L("Script plugin skipped.") : _L("Script plugin finished.");
-    const wxString message  = result.message.empty() ? fallback : from_u8(result.message);
-    show_status(message, skipped ? "info" : "success");
+    // Every started invocation — a synchronous `def execute` included — completes later through
+    // `finish`; only a launch failure is reported inline. Return without blocking.
+    if (!launch.launched_async)
+        finish(launch.outcome);
 }
 
 void PluginsDialog::update_plugin(const std::string& plugin_key)
@@ -1225,7 +1244,7 @@ void PluginsDialog::update_plugin(const std::string& plugin_key)
     } catch (const std::exception& ex) {
         error = ex.what();
     } catch (...) {
-        error = "Unknown error";
+        error = _u8L("Unknown error");
     }
 
     if (!updated) {
@@ -1301,6 +1320,9 @@ void PluginsDialog::delete_local_plugin(const PluginDescriptor& plugin)
             }
 
             send_plugins();
+            // The package is gone only now; the unload callback rechecked the notices too early.
+            if (Plater* plater = wxGetApp().plater())
+                plater->refresh_missing_plugin_notifications();
             show_status(wxString::Format(_L("Deleted \"%s\"."), plugin_name), "success");
         },
         _L("Deleting plugin"), _L("Deleting plugin..."));
@@ -1332,6 +1354,9 @@ void PluginsDialog::unsubscribe_cloud_plugin(const PluginDescriptor& plugin)
             }
 
             send_plugins();
+            // The package is gone only now; the unload callback rechecked the notices too early.
+            if (Plater* plater = wxGetApp().plater())
+                plater->refresh_missing_plugin_notifications();
             show_status(wxString::Format(_L("Unsubscribed \"%s\"."), plugin_name), "success");
         },
         _L("Unsubscribing plugin"), _L("Deleting local files and unsubscribing plugin..."));

@@ -220,11 +220,39 @@ TEST_CASE("An item larger than the bed cannot be placed", "[Arrange]")
     ArrangePolygons items;
     items.emplace_back(make_square(scaled(20.)));
     items.emplace_back(make_square(scaled(400.))); // far bigger than the bed
+    // An item that cannot be placed keeps the position it came in with, so the
+    // caller can leave it where the user had it.
+    items[1].translation = {scaled(10.), scaled(20.)};
 
     arrange(items, bed(200, 200), quiet_params(scaled(1.)));
 
     REQUIRE(items[0].bed_idx == 0);
     REQUIRE(items[1].bed_idx == UNARRANGED);
+    REQUIRE(items[1].translation.x() == scaled(10.));
+    REQUIRE(items[1].translation.y() == scaled(20.));
+}
+
+TEST_CASE("An item filling the printable area is arranged", "[Arrange]")
+{
+    // The arrange bed keeps a margin from the printable area and the item is widened by
+    // its brim. Neither may keep an item that fits the printable area from being placed.
+    DynamicPrintConfig cfg   = bed_config(); // 200 x 200
+    ArrangeParams      p     = quiet_params();
+
+    ArrangePolygons items = squares(1, 197.);
+    items.front().brim_width = 1.;
+    update_arrange_params(p, &cfg, items);
+    update_selected_items_inflation(items, &cfg, p);
+    arrange(items, get_shrink_bedpts(&cfg, p), p);
+    REQUIRE(items.front().bed_idx == 0);
+
+    // Larger than the printable area is still refused.
+    ArrangeParams   p_large = quiet_params();
+    ArrangePolygons large   = squares(1, 201.);
+    update_arrange_params(p_large, &cfg, large);
+    update_selected_items_inflation(large, &cfg, p_large);
+    arrange(large, get_shrink_bedpts(&cfg, p_large), p_large);
+    REQUIRE(large.front().bed_idx == UNARRANGED);
 }
 
 TEST_CASE("Items overflowing one bed spill onto virtual beds", "[Arrange]")
@@ -261,17 +289,67 @@ TEST_CASE("Arrange without final alignment keeps items disjoint", "[Arrange]")
     require_no_overlap(items);
 }
 
-TEST_CASE("Arrange aligns the pile to a custom center", "[Arrange]")
+TEST_CASE("Arrange centers a pile that fits on the custom alignment point", "[Arrange]")
 {
-    // align_center != (0.5, 0.5) selects Alignment::USER_DEFINED.
-    ArrangePolygons items  = squares(5, 30.);
+    ArrangePolygons items  = squares(4, 30.);
     ArrangeParams   params = quiet_params(scaled(2.));
     params.align_center    = Vec2d(0.3, 0.7);
 
     arrange(items, bed(250, 250), params);
 
-    for (const ArrangePolygon &ap : items)
+    BoundingBox pile;
+    for (const ArrangePolygon &ap : items) {
         REQUIRE(ap.bed_idx == 0);
+        pile.merge(ap.transformed_poly().contour.bounding_box());
+    }
+    // best_object_pos is align_center scaled to the bed.
+    const Point expected(scaled(250. * 0.3), scaled(250. * 0.7));
+    REQUIRE(std::abs(pile.center().x() - expected.x()) <= scaled(0.5));
+    REQUIRE(std::abs(pile.center().y() - expected.y()) <= scaled(0.5));
+    require_no_overlap(items);
+}
+
+// A row of four 40 mm parts centred on the 30% mark of a 200 x 50 mm bed would start 24 mm
+// left of it (#15727). The pile stops at the left edge instead.
+TEST_CASE("Arrange keeps a custom-aligned pile within the bed", "[Arrange]")
+{
+    const BoundingBox bed_   = bed(200, 50);
+    ArrangePolygons   items  = squares(4, 40.);
+    ArrangeParams     params = quiet_params(scaled(2.));
+    params.align_center      = Vec2d(0.3, 0.5);
+
+    arrange(items, bed_, params);
+
+    coord_t leftmost = std::numeric_limits<coord_t>::max();
+    for (const ArrangePolygon &ap : items) {
+        REQUIRE(ap.bed_idx == 0);
+        const BoundingBox bb = ap.transformed_poly().contour.bounding_box();
+        CHECK(bed_.contains(bb));
+        leftmost = std::min(leftmost, bb.min.x());
+    }
+    // Stopped at the edge it was aimed at, not re-centred.
+    CHECK(leftmost < scaled(10.));
+    require_no_overlap(items);
+}
+
+// Arranging a selection leaves the unselected parts where they are, but the final alignment
+// centres the box around both, so the selection does not move by its own centring. The check
+// against the bed and the fixed part must test where the selection actually lands.
+TEST_CASE("Arrange keeps a selection on the bed and clear of a fixed part", "[Arrange]")
+{
+    ArrangePolygons fixed = squares(1, 40.);
+    fixed.front().translation = {scaled(80.), scaled(80.)};
+    ArrangePolygons items = squares(3, 40.);
+    for (ArrangePolygon &ap : items)
+        ap.inflation = scaled(1.);
+
+    arrange(items, fixed, bed(200, 200), quiet_params());
+
+    for (const ArrangePolygon &ap : items) {
+        REQUIRE(ap.bed_idx == 0);
+        REQUIRE(bed(200, 200).contains(ap.transformed_poly().contour.bounding_box()));
+    }
+    items.insert(items.end(), fixed.begin(), fixed.end());
     require_no_overlap(items);
 }
 
@@ -303,10 +381,9 @@ TEST_CASE("Arrange keeps a pile aligned near an edge on the bed", "[Arrange][bel
     require_no_overlap(items);
 }
 
-// The clamp is a belt feature. Printers whose best_object_pos is off-centre (the A1 mini
-// and the H2 family) keep their final alignment: the pile is centred on that point, even
-// when that puts part of it outside the bed.
-TEST_CASE("Arrange leaves the final alignment of a flat bed unclamped", "[Arrange]")
+// Flat-bed printers with an off-centre best_object_pos (the A1 mini and the H2 family) get
+// the same clamp: centring the pile on that point used to push it off the bed (#15727).
+TEST_CASE("Arrange keeps a flat-bed pile aligned near an edge on the bed", "[Arrange]")
 {
     const BoundingBox bed_   = bed(95, 500);
     ArrangePolygons   items  = squares(4, 90.);
@@ -315,14 +392,15 @@ TEST_CASE("Arrange leaves the final alignment of a flat bed unclamped", "[Arrang
 
     arrange(items, bed_, params);
 
-    BoundingBox pile;
+    coord_t lowest = std::numeric_limits<coord_t>::max();
     for (const ArrangePolygon &ap : items) {
         REQUIRE(ap.bed_idx == 0);
-        pile.merge(ap.transformed_poly().contour.bounding_box());
+        const BoundingBox bb = ap.transformed_poly().contour.bounding_box();
+        CHECK(bed_.contains(bb));
+        lowest = std::min(lowest, bb.min.y());
     }
-    // Centred on the 5% mark of the bed's length, not pushed inside it.
-    CHECK_THAT(unscaled<double>(pile.center().y()), Catch::Matchers::WithinAbs(0.05 * 500., 15.));
-    CHECK(pile.min.y() < 0);
+    // Stopped at the edge it was aimed at, not re-centred.
+    CHECK(lowest < scaled(10.));
     require_no_overlap(items);
 }
 
@@ -426,4 +504,72 @@ TEST_CASE("Layered printing does not floor the object distance", "[Arrange]")
 
     update_selected_items_inflation(items, &cfg, p);
     CHECK(p.min_obj_distance == 0);
+}
+
+TEST_CASE("Bed exclusions apply by physical nozzle and overlapping Z range", "[Arrange][ExclusionVolume][MultiNozzle]")
+{
+    ArrangePolygon object = make_square(scaled(20.));
+    object.has_z_range = true;
+    object.z_min = 0.0;
+    object.z_max = 20.0;
+    object.bed_exclusion_extruder_ids = {1};
+
+    ArrangePolygon exclusion = make_square(scaled(20.));
+    exclusion.is_bed_exclusion = true;
+    exclusion.has_z_range = true;
+    exclusion.z_min = 10.0;
+    exclusion.z_max = 30.0;
+    exclusion.bed_exclusion_extruder_id = 1;
+
+    CHECK(bed_exclusion_applies(object, exclusion));
+
+    exclusion.bed_exclusion_extruder_id = 0;
+    CHECK_FALSE(bed_exclusion_applies(object, exclusion));
+
+    // Empty physical-nozzle assignments mean unresolved, so arrangement stays conservative.
+    object.bed_exclusion_extruder_ids.clear();
+    CHECK(bed_exclusion_applies(object, exclusion));
+
+    object.bed_exclusion_extruder_ids = {0};
+    object.z_max = 9.0;
+    CHECK_FALSE(bed_exclusion_applies(object, exclusion));
+
+    // Touching at one Z plane is intentionally treated as a collision.
+    object.z_max = 10.0;
+    CHECK(bed_exclusion_applies(object, exclusion));
+}
+
+TEST_CASE("Shared bed exclusions apply to every arranged object", "[Arrange][ExclusionVolume]")
+{
+    ArrangePolygon object = make_square(scaled(20.));
+    object.bed_exclusion_extruder_ids = {1};
+
+    ArrangePolygon shared = make_square(scaled(20.));
+    shared.is_bed_exclusion = true;
+    shared.bed_exclusion_extruder_id = -1;
+
+    CHECK(has_bed_exclusion_regions({shared}));
+    CHECK_FALSE(has_bed_exclusion_regions({object}));
+    CHECK(bed_exclusion_applies(object, shared));
+}
+
+TEST_CASE("Arrange keeps relevant objects outside conditional exclusion obstacles", "[Arrange][ExclusionVolume]")
+{
+    ArrangePolygon exclusion = make_square(scaled(30.));
+    exclusion.translation = Vec2crd(scaled(35.0), scaled(35.0));
+    exclusion.is_bed_exclusion = true;
+    exclusion.bed_exclusion_extruder_id = 0;
+
+    ArrangePolygons items = squares(4, 20.0);
+    for (ArrangePolygon &item : items)
+        item.bed_exclusion_extruder_ids = {0};
+
+    arrange(items, {exclusion}, bed(100.0, 100.0), quiet_params(scaled(1.0)));
+
+    const ExPolygon excluded_shape = exclusion.transformed_poly();
+    for (const ArrangePolygon &item : items) {
+        REQUIRE(item.bed_idx == 0);
+        CHECK(intersection(ExPolygons{item.transformed_poly()}, ExPolygons{excluded_shape}).empty());
+    }
+    require_no_overlap(items);
 }
