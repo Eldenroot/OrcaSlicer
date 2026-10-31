@@ -183,7 +183,9 @@ TEST_CASE("Pre start fan time switches the overhang fan on before the overhang",
         return slice({make_sphere(50.0, PI / 24.0)}, config);
     };
 
-    // The G-code without its fan commands, and where the overhang fan commands sit among the other lines.
+    // The movement lines without the fan commands, and where the overhang fan commands sit among them.
+    // Comments and the M73 progress lines are left out: those are placed by the estimated time, which the
+    // fan commands moved ahead of their moves can shift by a line.
     struct Result { std::vector<std::string> moves; std::vector<size_t> overhang_fan_positions; };
     const auto analyze = [](const std::string &gcode) {
         Result result;
@@ -198,7 +200,8 @@ TEST_CASE("Pre start fan time switches the overhang fan on before the overhang",
                     result.overhang_fan_positions.push_back(result.moves.size());
                 continue;
             }
-            result.moves.push_back(line);
+            if (!line.empty() && line.front() == 'G')
+                result.moves.push_back(line);
         }
         return result;
     };
@@ -212,6 +215,7 @@ TEST_CASE("Pre start fan time switches the overhang fan on before the overhang",
     CAPTURE(std::distance(with.moves.begin(), mismatch.first),
             mismatch.first != with.moves.end() ? *mismatch.first : std::string("<end>"),
             mismatch.second != without.moves.end() ? *mismatch.second : std::string("<end>"));
-    CHECK(with.moves == without.moves);
+    const bool same_moves = mismatch.first == with.moves.end() && mismatch.second == without.moves.end();
+    CHECK(same_moves);
     CHECK(with.overhang_fan_positions != without.overhang_fan_positions);
 }
