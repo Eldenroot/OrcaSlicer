@@ -169,6 +169,11 @@ public:
     static bool load(const std::string& path, const std::string& expected_vendor_name,
                      const Semver& expected_vendor_version, VendorCacheData& data);
 
+    // Read only the vendor's own profile, under the same checks as load(),
+    // without deserializing its presets.
+    static bool load_vendor_profile(const std::string& path, const std::string& expected_vendor_name,
+                                    const Semver& expected_vendor_version, VendorProfile& vendor);
+
     // Read the profile version a cache was stamped with, without deserializing
     // its presets. Empty if the file is unreadable, not a cache this build
     // understands, or not this vendor's. This is how an installed vendor's
@@ -188,9 +193,10 @@ public:
     // read. The three kinds are written in one stream, so reaching the machines
     // means reading past the processes and filaments — their configs are consumed
     // and dropped rather than built. This is how a build that ships caches instead
-    // of preset JSONs answers "which vendor carries this preset?".
+    // of preset JSONs answers "which vendor carries this preset?". With `renamed`
+    // it answers whether a preset was renamed from `preset_name` instead.
     static bool carries_preset(const std::string& path, const std::string& vendor_name,
-                               Preset::Type type, const std::string& preset_name);
+                               Preset::Type type, const std::string& preset_name, bool renamed = false);
 };
 
 } // namespace Slic3r
