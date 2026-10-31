@@ -5207,7 +5207,7 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
                 ImGui::SameLine();
                 imgui.text(title);
                 for (size_t row = 0; row < rows.size(); ++row)
-                    append_item(EItemType::Rect, libvgcode::convert(tool_colors[row_extruders[row]]), rows[row], false);
+                    append_item(EItemType::Rect, shown_filament_color(libvgcode::convert(tool_colors[row_extruders[row]])), rows[row], false);
             }
         }
 
