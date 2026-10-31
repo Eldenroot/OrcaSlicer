@@ -6,6 +6,7 @@
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/ModelArrange.hpp"
 #include "libslic3r/IMEXArrange.hpp"
+#include "libslic3r/Geometry/ConvexHull.hpp"
 
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
@@ -38,6 +39,7 @@
 #include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/libslic3r.h"
 #include <numeric>
+#include <boost/format.hpp>
 #include <exception>
 #include "libslic3r/LifecycleEvents.hpp"
 #include <optional>
@@ -579,11 +581,19 @@ void ArrangeJob::prepare()
 
     params = init_arrange_params(m_plater);
 
+    // The packer runs as a second pass after the stock arrange (pack_tighter()); the stock
+    // arrange takes the convex hulls of the outlines collected for it.
+    m_pack_eligible = params.use_sparrow;
+    params.use_sparrow = false;
+    m_packing          = false;
+    m_stock_score      = -1;
+    m_packed_score     = -1;
+    m_stock_unplaced   = m_packed_unplaced = 0;
+
     // After the close above, or the toast is gone before it is seen.
-    if (arrangement::sparrow_available() && m_plater->canvas3D()->get_arrange_settings().arrange_use_sparrow && !params.use_sparrow) {
+    if (arrangement::sparrow_available() && m_plater->canvas3D()->get_arrange_settings().arrange_use_sparrow && !m_pack_eligible) {
         wxString why = params.is_seq_print ? _L("print sequence is By Object")
-                     : params.is_belt      ? _L("the printer is a belt printer")
-                                           : _L("\"Allow multiple materials on same plate\" is off");
+                                           : _L("the printer is a belt printer");
         m_plater->get_notification_manager()->push_notification(NotificationType::BBLPlateInfo,
             NotificationManager::NotificationLevel::WarningNotificationLevel,
             into_u8(wxString::Format(_L("Experimental packer skipped: %s.\nUsing the standard arranger."), why)));
@@ -671,6 +681,105 @@ void ArrangeJob::check_unprintable()
     }
 }
 
+int ArrangeJob::score(const ArrangePolygons &selected, const ArrangePolygons &unselected) const
+{
+    std::set<int> beds;
+    int off_plate = 0;
+    for (const ArrangePolygon &ap : selected) {
+        if (ap.is_virt_object)
+            continue;
+        if (ap.bed_idx != 0)
+            ++off_plate; // a plate arrange sends what does not fit outside
+        if (ap.bed_idx >= 0)
+            beds.insert(ap.bed_idx);
+    }
+    // Plates the fixed parts occupy count too, or opening fresh plates would look like a win.
+    for (const ArrangePolygon &ap : unselected)
+        if (!ap.is_virt_object && ap.bed_idx >= 0)
+            beds.insert(ap.bed_idx);
+    return only_on_partplate ? off_plate : int(beds.size());
+}
+
+int ArrangeJob::unplaced(const ArrangePolygons &aps) const
+{
+    if (only_on_partplate)
+        return 0; // counted by score()
+    return int(std::count_if(aps.begin(), aps.end(), [](const ArrangePolygon &ap) { return !ap.is_virt_object && ap.bed_idx < 0; }));
+}
+
+// Stock arrange packs convex hulls, sparrow true outlines, so the area the hulls waste is
+// what sparrow can win back. Below 15% waste a second pass rarely saves a plate; above it,
+// a wrong yes costs a visible, stoppable search, a wrong no a missed plate.
+bool ArrangeJob::predict_better(int stock_score, double bed_area) const
+{
+    double hull = 0., outline = 0.;
+    for (const ArrangePolygon &ap : m_selected) {
+        if (ap.is_virt_object)
+            continue;
+        hull += Geometry::convex_hull(ap.poly.contour.points).area();
+        outline += ap.poly.area(); // openings count as free space
+    }
+    BOOST_LOG_TRIVIAL(info) << "arrange: " << "pack tighter check: stock score " << stock_score << ", unplaced " << m_stock_unplaced << ", outline/hull " << outline / hull;
+    // A plate arrange that left parts off tries whenever their outlines could fit the plate:
+    // a miss costs one plate's search.
+    if (only_on_partplate)
+        return stock_score >= 1 && outline <= bed_area;
+    return (stock_score >= 2 || m_stock_unplaced > 0) && hull > 0. && outline / hull < 0.85;
+}
+
+std::string ArrangeJob::done_message(bool canceled) const
+{
+    if (m_packed_score < 0)
+        return canceled ? _u8L("Packing canceled. Kept the standard arrangement.")
+                        : _u8L("No tighter layout found. Kept the standard arrangement.");
+    if (m_packed_unplaced < m_stock_unplaced)
+        return into_u8(GUI::format_wxstr(_L_PLURAL("Placed %1% more part.", "Placed %1% more parts.", m_stock_unplaced - m_packed_unplaced),
+                                         m_stock_unplaced - m_packed_unplaced));
+    // Relative to the standard arrange, which the user saw first.
+    if (only_on_partplate)
+        return m_packed_score == 0
+            ? _u8L("Packed tighter: all parts fit on the plate.")
+            : into_u8(GUI::format_wxstr(_L_PLURAL("Packed tighter: %1% part left off the plate.", "Packed tighter: %1% parts left off the plate.", m_packed_score),
+                                        m_packed_score));
+    return into_u8(GUI::format_wxstr(_L_PLURAL("Packed onto %1% plate instead of %2%.", "Packed onto %1% plates instead of %2%.", m_packed_score),
+                                     m_packed_score, m_stock_score));
+}
+
+// Re-arranges `selected` (the input of the stock arrange) with sparrow and keeps its result
+// in m_selected only if it places more parts or uses fewer plates than the stock one.
+void ArrangeJob::pack_tighter(Ctl &ctl, ArrangePolygons &selected, const Points &bedpts)
+{
+    m_packing        = true;
+    m_progress_value = 0;
+    ctl.update_status(0, _u8L("Packing tighter..."));
+
+    // Sparrow ignores the input bed of movable items, so one left unplaced means it failed.
+    for (ArrangePolygon &ap : selected)
+        if (!ap.is_virt_object) // prime towers stay pinned to their plates
+            ap.bed_idx = arrangement::UNARRANGED;
+    arrangement::ArrangeParams pack = params;
+    pack.use_sparrow  = true;
+    pack.sparrow_only = true;
+    // Mixing never puts more filaments on a plate than stock's busiest one: if that
+    // plate loads on this printer, so does any of sparrow's.
+    std::map<int, std::set<int>> plate_filaments;
+    for (const ArrangePolygon &ap : m_selected)
+        if (ap.bed_idx >= 0)
+            plate_filaments[ap.bed_idx].insert(ap.extrude_ids.begin(), ap.extrude_ids.end());
+    for (const auto &[bed, filaments] : plate_filaments)
+        pack.sparrow_max_filaments_per_plate = std::max(pack.sparrow_max_filaments_per_plate, int(filaments.size()));
+    arrangement::arrange(selected, m_unselected, bedpts, pack);
+
+    // Fewer parts left out wins, then fewer plates. A stop falls back to the stock result.
+    const int packed = score(selected, m_unselected), packed_unplaced = unplaced(selected);
+    BOOST_LOG_TRIVIAL(info) << "arrange: " << "pack tighter: stock " << m_stock_score << " / " << m_stock_unplaced << " unplaced, sparrow " << packed << " / " << packed_unplaced;
+    if (!ctl.was_canceled() && (packed_unplaced < m_stock_unplaced || (packed_unplaced == m_stock_unplaced && packed < m_stock_score))) {
+        m_packed_score    = packed;
+        m_packed_unplaced = packed_unplaced;
+        m_selected        = std::move(selected);
+    }
+}
+
 void ArrangeJob::process(Ctl &ctl)
 {
     static const auto arrangestr = _u8L("Arranging");
@@ -698,7 +807,7 @@ void ArrangeJob::process(Ctl &ctl)
     imex.add_keep_outs(m_unselected);
     // The packer knows nothing about IDEX/IQEX zones; imex.finish() below relies on the stock arranger.
     if (imex.active())
-        params.use_sparrow = false;
+        m_pack_eligible = false;
 
     bool   enable_wrapping = global_config.option<ConfigOptionBool>("enable_wrapping_detection")->value;
     partplate_list.preprocess_exclude_areas(params.excluded_regions, enable_wrapping, 1, scale_(1));
@@ -736,10 +845,20 @@ void ArrangeJob::process(Ctl &ctl)
             <<", bbox:"<<get_extents(item.poly).min.transpose()<<","<<get_extents(item.poly).max.transpose();
     }
 
+    // Input for the pack tighter pass, copied after the inflation is set.
+    ArrangePolygons pack_selected;
+    if (m_pack_eligible)
+        pack_selected = m_selected;
+
     const ArrangePolygons before = imex.active() ? m_selected : ArrangePolygons();
     arrangement::arrange(m_selected, m_unselected, bedpts, params);
     if (!ctl.was_canceled())
         imex.finish(m_selected, before, m_unselected, params);
+
+    m_stock_score    = score(m_selected, m_unselected);
+    m_stock_unplaced = unplaced(m_selected);
+    if (m_pack_eligible && !ctl.was_canceled() && predict_better(m_stock_score, std::abs(Polygon(bedpts).area())))
+        pack_tighter(ctl, pack_selected, bedpts);
 
     // sort by item id
     std::sort(m_selected.begin(), m_selected.end(), [](auto a, auto b) {return a.itemid < b.itemid; });
@@ -766,6 +885,7 @@ void ArrangeJob::process(Ctl &ctl)
 
     // finalize just here.
     ctl.update_status(100,
+        m_packing ? done_message(ctl.was_canceled()) :
         ctl.was_canceled() ? _u8L("Arranging canceled.") :
         we_have_unpackable_items ? _u8L("Arranging complete, but some items were not able to be arranged. Reduce spacing and try again.") : _u8L("Arranging done."));
 }
@@ -794,7 +914,8 @@ void ArrangeJob::finalize(bool canceled, std::exception_ptr &eptr) {
         eptr = std::current_exception();
     }
 
-    if (canceled || eptr)
+    // A cancel while the packer runs keeps the stock result, which m_selected still holds.
+    if ((canceled && !m_packing) || eptr)
         return;
 
     // Unprintable items go to the last virtual bed
@@ -994,8 +1115,8 @@ arrangement::ArrangeParams init_arrange_params(Plater *p)
     }
 
     // Decided after is_seq_print is final, so the outline flag and the "packer
-    // skipped" toast in prepare() agree with what arrangement::arrange() runs.
-    params.use_sparrow = arrangement::sparrow_available() && settings.arrange_use_sparrow && !params.is_seq_print && !params.is_belt && params.allow_multi_materials_on_same_plate;
+    // skipped" toast in prepare() agree with what the pack tighter pass runs.
+    params.use_sparrow = arrangement::sparrow_available() && settings.arrange_use_sparrow && !params.is_seq_print && !params.is_belt;
     // Set before the ArrangePolygons are collected. The flag stays set until the
     // next arrange, so any get_arrange_polygon() caller in between sees it too.
     arrangement::use_true_outline.store(params.use_sparrow, std::memory_order_relaxed);

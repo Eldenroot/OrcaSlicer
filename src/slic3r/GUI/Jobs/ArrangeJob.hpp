@@ -6,6 +6,7 @@
 #include "libslic3r/Polygon.hpp"
 #include <exception>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "Job.hpp"
@@ -56,6 +57,24 @@ class ArrangeJob : public Job
 
     // BBS: add flag for whether on current part plate
     bool only_on_partplate{false};
+
+    // Pack tighter. Stock arrange packs convex hulls. When they waste enough area that
+    // sparrow, which packs true outlines, may do better, process() re-arranges the same
+    // items with it and keeps that result only if it places more parts or uses fewer
+    // plates. A cancel while it runs keeps the stock result.
+    bool m_pack_eligible   = false; // the packer is on and applies to this arrange
+    bool m_packing         = false; // the sparrow phase was reached
+    int  m_stock_score     = -1;
+    int  m_packed_score    = -1;    // >= 0 if the sparrow result was kept
+    int  m_stock_unplaced  = 0;     // parts a full arrange left off every plate
+    int  m_packed_unplaced = 0;
+
+    // Lower is better: plates used, or parts left off the plate for a plate arrange.
+    int         score(const ArrangePolygons &selected, const ArrangePolygons &unselected) const;
+    int         unplaced(const ArrangePolygons &aps) const;
+    bool        predict_better(int stock_score, double bed_area) const;
+    std::string done_message(bool canceled) const;
+    void        pack_tighter(Ctl &ctl, ArrangePolygons &selected, const Points &bedpts);
 
     // clear m_selected and m_unselected, reserve space for next usage
     void clear_input();

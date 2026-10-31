@@ -230,11 +230,13 @@ TEST_CASE("Arrange preserves material separation", "[arrange][sparrow]")
         items[0].filament_temp_type = FilamentTempType::LowTemp;
         items[1].filament_temp_type = FilamentTempType::HighTemp;
     }
-    SECTION("Different TPU extruders") {
-        items[0].extrude_id_filament_types = {{1, "TPU"}};
-        items[1].extrude_id_filament_types = {{2, "TPU"}};
+    auto params = settings();
+    SECTION("One material per plate") {
+        items[0].extrude_ids = {1};
+        items[1].extrude_ids = {2};
+        params.allow_multi_materials_on_same_plate = false;
     }
-    arrange(items, bed, settings());
+    arrange(items, bed, params);
     REQUIRE(items[0].is_arranged());
     REQUIRE(items[1].is_arranged());
     REQUIRE(items[0].bed_idx != items[1].bed_idx);
@@ -248,10 +250,6 @@ TEST_CASE("Arrange respects fixed objects' materials", "[arrange][sparrow]")
     SECTION("Incompatible temperatures") {
         items[0].filament_temp_type = FilamentTempType::LowTemp;
         fixed[0].filament_temp_type = FilamentTempType::HighTemp;
-    }
-    SECTION("Different TPU extruders") {
-        items[0].extrude_id_filament_types = {{1, "TPU"}};
-        fixed[0].extrude_id_filament_types = {{2, "TPU"}};
     }
     ArrangePolygons expected = items;
     auto stock = settings();
@@ -278,10 +276,9 @@ TEST_CASE("Stock fallback uses convex hulls without changing input contours", "[
     for (auto &ap : expected)
         ap.poly.contour = Geometry::convex_hull(ap.poly.contour.points);
     auto params = settings();
-    // Mirrors the CLI: outlines can already have been collected before fallback.
-    params.allow_multi_materials_on_same_plate = false;
-    arrange(actual, fixed, bed, params);
+    // Mirrors ArrangeJob, which collects outlines for sparrow and arranges them with stock first.
     params.use_sparrow = false;
+    arrange(actual, fixed, bed, params);
     arrange(expected, expected_fixed, bed, params);
     for (size_t i = 0; i < actual.size(); ++i) {
         REQUIRE(actual[i].is_arranged());
