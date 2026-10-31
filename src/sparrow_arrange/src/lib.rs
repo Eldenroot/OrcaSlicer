@@ -10,7 +10,8 @@ pub mod pack;
 #[cfg(test)]
 mod tests;
 
-use pack::{ItemIn, Params};
+use pack::{FilamentRules, ItemIn, Params};
+pub use pack::Out as sp_placement;
 use std::os::raw::{c_int, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -40,6 +41,8 @@ pub struct sp_item {
     pub y: f64,
     pub rotation: f64,
     pub allow_rotation: c_int,
+    pub filaments: u64,
+    pub tower: c_int,
 }
 
 #[repr(C)]
@@ -56,29 +59,24 @@ pub struct sp_input {
     pub should_stop: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
     pub user: *mut c_void,
     pub on_progress: Option<unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int)>,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct sp_placement {
-    pub bed_idx: c_int,
-    pub x: f64,
-    pub y: f64,
-    pub rotation: f64,
+    pub on_layout: Option<unsafe extern "C" fn(*mut c_void, *const sp_placement, usize)>,
+    pub allow_mixing: c_int,
+    pub max_filaments_per_bed: c_int,
+    pub incompatible: *const u64,
+    pub n_incompatible: usize,
 }
 
 const OK: c_int = 0;
 const ERR_INVALID: c_int = 1;
 const ERR_PANIC: c_int = 2;
 
+/// The `n` elements at `p`, or none if `p` is null.
+unsafe fn slice<'a, T>(p: *const T, n: usize) -> &'a [T] {
+    if p.is_null() || n == 0 { &[] } else { unsafe { std::slice::from_raw_parts(p, n) } }
+}
+
 unsafe fn read_polygon(p: &sp_polygon) -> Vec<(f64, f64)> {
-    if p.pts.is_null() || p.n == 0 {
-        return Vec::new();
-    }
-    unsafe { std::slice::from_raw_parts(p.pts, p.n) }
-        .iter()
-        .map(|q| (q.x, q.y))
-        .collect()
+    unsafe { slice(p.pts, p.n) }.iter().map(|q| (q.x, q.y)).collect()
 }
 
 /// # Safety
@@ -104,39 +102,25 @@ unsafe fn run(in_: *const sp_input, out: *mut sp_placement) -> c_int {
         return ERR_INVALID;
     }
 
-    let raw_items = if inp.n_items == 0 {
-        &[][..]
-    } else {
-        unsafe { std::slice::from_raw_parts(inp.items, inp.n_items) }
-    };
+    let raw_items = unsafe { slice(inp.items, inp.n_items) };
     if raw_items.iter().any(|it| it.n_openings > 0 && it.openings.is_null()) {
         return ERR_INVALID;
     }
-    let raw_holes = if inp.n_holes == 0 {
-        &[][..]
-    } else {
-        unsafe { std::slice::from_raw_parts(inp.holes, inp.n_holes) }
-    };
-
-    let holes: Vec<Vec<(f64, f64)>> = raw_holes.iter().map(|h| unsafe { read_polygon(h) }).collect();
+    let holes: Vec<Vec<(f64, f64)>> = unsafe { slice(inp.holes, inp.n_holes) }.iter().map(|h| unsafe { read_polygon(h) }).collect();
     let items: Vec<ItemIn> = raw_items
         .iter()
-        .map(|it| {
-            let raw_openings = if it.n_openings == 0 || it.openings.is_null() {
-                &[][..]
-            } else {
-                unsafe { std::slice::from_raw_parts(it.openings, it.n_openings) }
-            };
-            ItemIn {
+        .map(|it| ItemIn {
             outline: unsafe { read_polygon(&it.outline) },
-            openings: raw_openings.iter().map(|p| unsafe { read_polygon(p) }).collect(),
+            openings: unsafe { slice(it.openings, it.n_openings) }.iter().map(|p| unsafe { read_polygon(p) }).collect(),
             fixed: it.fixed != 0,
             bed_idx: it.bed_idx,
             x: it.x,
             y: it.y,
             rotation: it.rotation,
             allow_rotation: it.allow_rotation != 0,
-        }})
+            filaments: it.filaments,
+            tower: it.tower != 0,
+        })
         .collect();
 
     let user = inp.user;
@@ -163,12 +147,21 @@ unsafe fn run(in_: *const sp_input, out: *mut sp_placement) -> c_int {
         max_beds: inp.max_beds,
         time_limit_s: inp.time_limit_s,
         seed: inp.seed,
+        filaments: FilamentRules {
+            allow_mixing: inp.allow_mixing != 0,
+            max_per_bed: if inp.max_filaments_per_bed > 0 { inp.max_filaments_per_bed as u32 } else { u32::MAX },
+            incompatible: unsafe { slice(inp.incompatible, inp.n_incompatible) }.to_vec(),
+        },
     };
 
-    let placements = pack::arrange(&params, &holes, &items, &stop, &progress);
-    let out_slice = unsafe { std::slice::from_raw_parts_mut(out, inp.n_items) };
-    for (o, p) in out_slice.iter_mut().zip(placements) {
-        *o = sp_placement { bed_idx: p.bed_idx, x: p.x, y: p.y, rotation: p.rotation };
-    }
+    let on_layout = inp.on_layout;
+    let layout = move |snapshot: &[sp_placement]| {
+        if let Some(f) = on_layout {
+            unsafe { f(user, snapshot.as_ptr(), snapshot.len()) };
+        }
+    };
+
+    let placements = pack::arrange_live(&params, &holes, &items, &stop, &progress, &layout);
+    unsafe { std::slice::from_raw_parts_mut(out, inp.n_items) }.copy_from_slice(&placements);
     OK
 }

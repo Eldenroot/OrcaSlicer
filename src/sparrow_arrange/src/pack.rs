@@ -9,6 +9,7 @@
 //! a `DTransformation` maps 1:1 onto the header; jagua-rs' importer would re-centre them.
 
 use jagua_rs::collision_detection::CDEConfig;
+use jagua_rs::collision_detection::hazards::filter::NoFilter;
 use jagua_rs::entities::{Container, Item, Layout};
 use jagua_rs::geometry::fail_fast::SPSurrogateConfig;
 use jagua_rs::geometry::geo_enums::RotationRange;
@@ -39,8 +40,14 @@ pub struct ItemIn {
     pub y: f64,
     pub rotation: f64,
     pub allow_rotation: bool,
+    /// Bit f set: the item prints with filament f. 0 for items that print nothing.
+    pub filaments: u64,
+    /// A fixed prime tower: an obstacle only on a bed printing two or more filaments.
+    pub tower: bool,
 }
 
+/// Also the C ABI's `sp_placement`.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Out {
     pub bed_idx: i32,
@@ -59,6 +66,112 @@ pub struct Params {
     pub max_beds: i32,
     pub time_limit_s: f64,
     pub seed: u64,
+    pub filaments: FilamentRules,
+}
+
+/// Which filaments may share a bed. Each filament set packs onto beds of its own; the
+/// cleanup passes then move items between beds under these rules. The default lets
+/// anything share, which with every item at filaments 0 is a single group.
+#[derive(Clone, Debug)]
+pub struct FilamentRules {
+    pub allow_mixing: bool,
+    /// Most filaments a bed may hold after a move that adds one.
+    pub max_per_bed: u32,
+    /// `incompatible[f]`: the filaments that cannot share a bed with filament f.
+    pub incompatible: Vec<u64>,
+}
+
+impl Default for FilamentRules {
+    fn default() -> Self {
+        FilamentRules { allow_mixing: true, max_per_bed: u32::MAX, incompatible: Vec::new() }
+    }
+}
+
+impl FilamentRules {
+    /// Can an item printing `item` join a bed printing `bed`? `Some(false)`: free, it adds
+    /// no filament. `Some(true)`: allowed, but adds one. `None`: not allowed.
+    pub(crate) fn join(&self, bed: u64, item: u64) -> Option<bool> {
+        if bed == 0 || item & !bed == 0 {
+            return Some(false);
+        }
+        let merged = bed | item;
+        let compatible = (0..64)
+            .filter(|f| item >> f & 1 == 1)
+            .all(|f| self.incompatible.get(f).is_none_or(|inc| inc & merged == 0));
+        (self.allow_mixing && merged.count_ones() <= self.max_per_bed && compatible).then_some(true)
+    }
+}
+
+/// The items on `bed` that overlap one of its prime towers.
+fn tower_blockers(p: &Params, items: &[ItemIn], shapes: &[Option<SPolygon>], out: &[Out], bed: i32) -> Vec<usize> {
+    let on_bed = |i: &usize| out[*i].bed_idx == bed && shapes[*i].is_some();
+    // jagua counts touching its container as a collision, and towers sit at the bed edge,
+    // so test in a frame with a margin around the bed.
+    const M: f64 = 10.0;
+    let world = |i: usize| world_outline(shapes[i].as_ref().unwrap(), out[i].x + M, out[i].y + M, out[i].rotation);
+    let towers: Vec<SPolygon> = (0..items.len()).filter(on_bed).filter(|&i| items[i].tower).map(world).collect();
+    if towers.is_empty() {
+        return Vec::new();
+    }
+    let others = (0..items.len()).filter(on_bed).filter(|&i| !items[i].tower);
+    match obstacle_layout(&towers, (p.bed_w + 2. * M) as f32, (p.bed_h + 2. * M) as f32, 0) {
+        Some(layout) => others.filter(|&i| layout.cde().detect_poly_collision(&world(i), &NoFilter)).collect(),
+        None => others.collect(),
+    }
+}
+
+/// Clear `bed`'s prime towers by re-seating the items on them elsewhere on the same bed.
+/// All or nothing: returns false, changing nothing, if one of them does not fit.
+fn make_room_for_towers(
+    p: &Params,
+    items: &[ItemIn],
+    shapes: &[Option<SPolygon>],
+    holes: &[SPolygon],
+    out: &mut [Out],
+    bed: i32,
+    rng: &mut Xoshiro256PlusPlus,
+    stop: &dyn Fn() -> bool,
+) -> bool {
+    let blockers = tower_blockers(p, items, shapes, out, bed);
+    // A fixed item cannot move: the tower it covers keeps the bed to one filament.
+    if blockers.iter().any(|&i| items[i].fixed) {
+        return false;
+    }
+    if blockers.is_empty() {
+        return true;
+    }
+    let mut layout = holes.to_vec();
+    for (i, (shape, pose)) in shapes.iter().zip(out.iter()).enumerate() {
+        if let Some(shape) = shape {
+            if pose.bed_idx == bed && !blockers.contains(&i) {
+                layout.push(world_outline(shape, pose.x, pose.y, pose.rotation));
+            }
+        }
+    }
+    let mut candidates: Vec<Candidate> = blockers.iter().map(|&i| {
+        Candidate { out_idx: i, shape: shapes[i].clone().unwrap(), allow_rotation: items[i].allow_rotation }
+    }).collect();
+    candidates.sort_by(|a, b| b.shape.area.total_cmp(&a.shape.area));
+    let indices: Vec<_> = (0..candidates.len()).collect();
+    let filled = gap_fill(&candidates, &indices, &layout, p.bed_w as f32, p.bed_h as f32, rng, stop);
+    if filled.len() < candidates.len() {
+        return false;
+    }
+    for (k, dt) in filled {
+        let c = &candidates[k];
+        let (x, y, rotation) = to_header_pose(dt, &c.shape);
+        out[c.out_idx] = Out { bed_idx: bed, x, y, rotation };
+    }
+    true
+}
+
+fn same_shapes(a: &[SPolygon], b: &[SPolygon]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.vertices == y.vertices)
+}
+
+/// The filaments printed on `bed`, fixed items included.
+fn bed_mask(items: &[ItemIn], out: &[Out], bed: i32) -> u64 {
+    items.iter().zip(out).filter(|(_, pose)| pose.bed_idx == bed).fold(0, |m, (it, _)| m | it.filaments)
 }
 
 // Lifted from sparrow's DEFAULT_SPARROW_CONFIG.
@@ -86,37 +199,6 @@ const TARGET_FILL: f32 = 0.92;
 
 /// Evict-or-add attempts per bed; also the number of slices the budget is split into.
 const MAX_ATTEMPTS: u32 = 8;
-
-/// Track meaningful gains in the best feasible packing. Since usable bed area
-/// is constant during a bed's search, relative fill improvement is exactly the
-/// relative improvement in occupied area; no approximate obstacle-area sum is needed.
-struct FillProgress {
-    reference_area: Option<f32>,
-    last_gain: Instant,
-    patience: Duration,
-}
-
-impl FillProgress {
-    fn new(now: Instant, patience: Duration) -> Self {
-        Self { reference_area: None, last_gain: now, patience }
-    }
-
-    fn observe(&mut self, area: f32, now: Instant) {
-        if area <= 0.0 || !area.is_finite() {
-            return;
-        }
-        // Accumulate small gains against the last meaningful improvement rather
-        // than restarting the timer for every tiny addition or numeric fluctuation.
-        if self.reference_area.is_none_or(|previous| area >= previous * 1.01) {
-            self.reference_area = Some(area);
-            self.last_gain = now;
-        }
-    }
-
-    fn deadline(&self) -> Option<Instant> {
-        self.reference_area.map(|_| self.last_gain + self.patience)
-    }
-}
 
 /// Termination for the separator: the caller's deadline plus the caller's cancel poll.
 struct Deadline<'a> {
@@ -179,13 +261,9 @@ fn to_spolygon(pts: &[(f64, f64)]) -> Option<SPolygon> {
 
 /// Items are centred on their centroid, as jagua-rs' importer does: `UniformBBoxSampler`
 /// intersects translation and container ranges, which needs the shape to straddle the
-/// origin. `centering` is undone in `to_header_pose`.
-fn centering(shape: &SPolygon) -> Point {
-    shape.centroid()
-}
-
+/// origin. `to_header_pose` undoes it.
 fn original(shape: SPolygon) -> OriginalShape {
-    let c = centering(&shape);
+    let c = shape.centroid();
     OriginalShape {
         shape,
         pre_transform: DTransformation::new(0.0, (-c.0, -c.1)),
@@ -198,12 +276,13 @@ fn make_item(id: usize, shape: SPolygon, rot: RotationRange) -> Option<Item> {
     Item::new(id, original(shape), rot, None, CDE_CONFIG.item_surrogate_config).ok()
 }
 
-/// Converts a jagua-rs placement of the *centred* shape back to the header's contract,
+/// Converts a jagua-rs placement of the *centred* `shape` back to the header's contract,
 /// `world = rotate(outline, rotation) + (x, y)`.
 ///
 /// jagua-rs places `outline - c` at `(r, t)`, giving
 /// `world = rotate(outline, r) - rotate(c, r) + t`, so `(x, y) = t - rotate(c, r)`.
-fn to_header_pose(dt: DTransformation, c: Point) -> (f64, f64, f64) {
+fn to_header_pose(dt: DTransformation, shape: &SPolygon) -> (f64, f64, f64) {
+    let c = shape.centroid();
     let r = dt.rotation();
     let (t_x, t_y) = dt.translation();
     let (sin, cos) = r.sin_cos();
@@ -223,19 +302,24 @@ struct Candidate {
     out_idx: usize,
     shape: SPolygon,
     allow_rotation: bool,
-    centering: Point,
 }
 
-/// Progress sink: `(bed_idx, movable items placed so far)`. Only invoked from the
-/// thread that called [`arrange`]; the separator's workers have returned by then.
+/// Progress sink: `(bed_idx, movable items placed so far)`, bed_idx -1 once the final
+/// cleanup starts. Only invoked from the thread that called [`arrange_live`]; the
+/// separator's workers have returned by then.
 pub type Progress<'a> = &'a dyn Fn(i32, usize);
 
-pub fn arrange(
+/// Receives the best layout so far, in input order, on the thread that called
+/// [`arrange_live`]. Items not placed yet are [`Out::UNPLACED`].
+pub type LayoutSink<'a> = &'a dyn Fn(&[Out]);
+
+pub fn arrange_live(
     p: &Params,
     holes: &[Vec<(f64, f64)>],
     items: &[ItemIn],
     stop: &dyn Fn() -> bool,
     progress: Progress,
+    on_layout: LayoutSink,
 ) -> Vec<Out> {
     let mut out = vec![Out::UNPLACED; items.len()];
     let bed_w = p.bed_w as f32;
@@ -248,6 +332,7 @@ pub fn arrange(
 
     // Fixed items keep their pose and, with the holes, form each bed's forbidden region.
     let mut obstacles: Vec<Vec<SPolygon>> = vec![Vec::new(); max_beds as usize];
+    let mut towers: Vec<Vec<SPolygon>> = vec![Vec::new(); max_beds as usize];
     let hole_shapes: Vec<SPolygon> = holes.iter().filter_map(|h| to_spolygon(h)).collect();
     for b in obstacles.iter_mut() {
         b.extend(hole_shapes.iter().cloned());
@@ -264,7 +349,8 @@ pub fn arrange(
         let t = DTransformation::new(it.rotation as f32, (it.x as f32, it.y as f32)).compose();
         let mut placed = shape.clone();
         placed.transform_from(&shape, &t);
-        obstacles[it.bed_idx as usize].push(placed);
+        let target = if it.tower { &mut towers } else { &mut obstacles };
+        target[it.bed_idx as usize].push(placed);
     }
 
     // Movable items. Degenerate outlines never reach the solver and stay at -1.
@@ -280,8 +366,7 @@ pub fn arrange(
         {
             continue;
         }
-        let c = centering(&shape);
-        pending.push(Candidate { out_idx: i, shape, allow_rotation: it.allow_rotation, centering: c });
+        pending.push(Candidate { out_idx: i, shape, allow_rotation: it.allow_rotation });
     }
     if pending.is_empty() {
         progress(0, 0);
@@ -299,56 +384,105 @@ pub fn arrange(
     let mut done = 0usize;
     let mut last_bed = 0i32;
 
-    for bed in 0..max_beds {
-        // Polled between beds as well as inside the separator, so a cancel aborts the whole
-        // run rather than just the bed it landed in.
-        if pending.is_empty() || stop() {
-            break;
-        }
-        last_bed = bed;
-        progress(bed, done);
-        let base = done;
-        let report = |n: usize| progress(bed, base + n);
-        let (placed, leftover) = pack_bed(
-            &pending,
-            &obstacles[bed as usize],
-            bed_w,
-            bed_h,
-            bed_budget,
-            &mut rng,
-            stop,
-            &report,
-        );
-        // Gap fill: pack_bed tries only a handful of leftovers per bed, so give every
-        // remaining item, largest first, a cheap collision-free placement before moving on.
-        let mut placed = placed;
-        let mut layout = obstacles[bed as usize].clone();
-        for (idx, dt) in &placed {
-            let (x, y, r) = to_header_pose(*dt, pending[*idx].centering);
-            layout.push(world_outline(&pending[*idx].shape, x, y, r));
-        }
-        let filled = gap_fill(&pending, &leftover, &layout, bed_w, bed_h, &mut rng, stop);
-        let leftover: Vec<usize> = leftover.iter().copied().filter(|i| !filled.iter().any(|(j, _)| j == i)).collect();
-        placed.extend(filled);
-        report(placed.len());
-        done += placed.len();
+    // Each filament set packs onto beds of its own, in filament order, so the search never
+    // mixes them. A bed holding fixed items is used only if the set may join them.
+    let mut groups: Vec<u64> = pending.iter().map(|c| items[c.out_idx].filaments).collect();
+    groups.sort_by_key(|&m| (m.trailing_zeros(), m));
+    groups.dedup();
+    let mut ungrouped = pending;
+    let mut first_bed = 0i32;
+    for group in groups {
+        let (mut pending, rest): (Vec<Candidate>, Vec<Candidate>) =
+            ungrouped.into_iter().partition(|c| items[c.out_idx].filaments == group);
+        ungrouped = rest;
+        let mut group_last: Option<i32> = None;
+        for bed in first_bed..max_beds {
+            // Polled between beds as well as inside the separator, so a cancel aborts the whole
+            // run rather than just the bed it landed in.
+            if pending.is_empty() || stop() {
+                break;
+            }
+            // Fixed items on the bed: join it under the same rules as a cleanup move.
+            if p.filaments.join(bed_mask(items, &out, bed), group).is_none() {
+                continue;
+            }
+            // A prime tower takes room only on a bed printing two or more filaments.
+            let mut bed_obstacles = obstacles[bed as usize].clone();
+            let tower_prints = (bed_mask(items, &out, bed) | group).count_ones() >= 2;
+            if tower_prints {
+                bed_obstacles.extend(towers[bed as usize].iter().cloned());
+            }
+            progress(bed, done);
+            let base = done;
+            let report = |placed: &[(usize, DTransformation)]| {
+                progress(bed, base + placed.len());
+                let mut snapshot = out.clone();
+                for (idx, dt) in placed {
+                    let (x, y, rotation) = to_header_pose(*dt, &pending[*idx].shape);
+                    snapshot[pending[*idx].out_idx] = Out { bed_idx: bed, x, y, rotation };
+                }
+                on_layout(&snapshot);
+            };
+            let (placed, leftover) = pack_bed(
+                &pending,
+                &bed_obstacles,
+                bed_w,
+                bed_h,
+                bed_budget,
+                &mut rng,
+                stop,
+                &report,
+            );
+            // Gap fill: pack_bed tries only a handful of leftovers per bed, so give every
+            // remaining item, largest first, a cheap collision-free placement before moving on.
+            let mut placed = placed;
+            let mut layout = bed_obstacles;
+            for (idx, dt) in &placed {
+                let (x, y, r) = to_header_pose(*dt, &pending[*idx].shape);
+                layout.push(world_outline(&pending[*idx].shape, x, y, r));
+            }
+            placed.extend(gap_fill(&pending, &leftover, &layout, bed_w, bed_h, &mut rng, stop));
+            progress(bed, base + placed.len());
+            done += placed.len();
+            let placed_any = !placed.is_empty();
 
-        for (idx, dt) in placed {
-            let (x, y, rotation) = to_header_pose(dt, pending[idx].centering);
-            out[pending[idx].out_idx] = Out { bed_idx: bed, x, y, rotation };
-        }
-        // Keep the leftovers, preserving the largest-first order, for the next bed.
-        let keep = leftover;
-        let mut rest = Vec::with_capacity(keep.len());
-        for (i, c) in pending.into_iter().enumerate() {
-            if keep.binary_search(&i).is_ok() {
-                rest.push(c);
+            let mut taken = vec![false; pending.len()];
+            for (idx, dt) in placed {
+                let (x, y, rotation) = to_header_pose(dt, &pending[idx].shape);
+                out[pending[idx].out_idx] = Out { bed_idx: bed, x, y, rotation };
+                taken[idx] = true;
+            }
+            on_layout(&out);
+            // Keep the leftovers, preserving the largest-first order, for the next bed.
+            let mut taken = taken.into_iter();
+            pending.retain(|_| !taken.next().unwrap());
+            if placed_any {
+                last_bed = last_bed.max(bed);
+                group_last = Some(bed);
+            } else if obstacles[bed as usize].len() == hole_shapes.len()
+                && (!tower_prints || towers.get(bed as usize + 1).is_none_or(|next| same_shapes(next, &towers[bed as usize])))
+            {
+                // Nothing fit a bed holding only the holes and the next bed's prime tower, so what
+                // is left of this set fits no later bed either. Stop here rather than walk every
+                // bed, which would leave none for the next set.
+                break;
             }
         }
-        pending = rest;
+        if let Some(bed) = group_last {
+            first_bed = bed + 1;
+        }
     }
-    consolidate(p, holes, items, &mut out, &mut rng, stop);
-    fill_enclosed_openings(p, holes, items, &mut out, &mut rng, stop);
+    // The cleanup passes have no budget of their own and can run long, depending on which
+    // items end up on the last bed, so give them the main search's, at least 5 s. Every
+    // move they commit is valid on its own, so stopping early keeps a valid layout.
+    let cleanup_s = (bed_budget * f64::from(last_bed + 1)).max(5.0);
+    let cleanup_deadline = Instant::now() + Duration::from_secs_f64(cleanup_s);
+    let cleanup_stop = || stop() || Instant::now() >= cleanup_deadline;
+    progress(-1, done);
+    consolidate(p, holes, items, &mut out, &mut rng, &cleanup_stop, on_layout);
+    on_layout(&out);
+    fill_enclosed_openings(p, holes, items, &mut out, &mut rng, &cleanup_stop, on_layout);
+    on_layout(&out);
     progress(last_bed, done);
     out
 }
@@ -371,6 +505,7 @@ fn opening_layout(
     opening: SPolygon,
     host_idx: usize,
     ancestors: &[usize],
+    items: &[ItemIn],
     shapes: &[Option<SPolygon>],
     bed_holes: &[SPolygon],
     out: &[Out],
@@ -394,29 +529,24 @@ fn opening_layout(
     ).ok()?;
     let mut layout = Layout::new(container);
     let target = out[host_idx].bed_idx;
+    // Nesting never adds a filament, so the bed's prime tower stays as it is.
+    let tower_prints = bed_mask(items, out, target).count_ones() >= 2;
 
     for (i, (shape, pose)) in shapes.iter().zip(out.iter()).enumerate() {
         if stop() { return None; }
-        if i == host_idx || ancestors.contains(&i) || pose.bed_idx != target {
+        if i == host_idx || ancestors.contains(&i) || pose.bed_idx != target || (items[i].tower && !tower_prints) {
             continue;
         }
-        let shape = shape.as_ref()?;
-        let world = world_outline(shape, pose.x, pose.y, pose.rotation);
-        if Rect::intersection(world.bbox, opening.bbox).is_none() {
-            continue;
+        let world = world_outline(shape.as_ref()?, pose.x, pose.y, pose.rotation);
+        if Rect::intersection(world.bbox, opening.bbox).is_some() {
+            place_fixed(&mut layout, i, &world)?;
         }
-        let obstacle = make_item(i, world.clone(), RotationRange::None)?;
-        let c = centering(&world);
-        layout.place_item(&obstacle, DTransformation::new(0.0, (c.0, c.1)));
     }
     for (i, shape) in bed_holes.iter().enumerate() {
         if stop() { return None; }
-        if Rect::intersection(shape.bbox, opening.bbox).is_none() {
-            continue;
+        if Rect::intersection(shape.bbox, opening.bbox).is_some() {
+            place_fixed(&mut layout, shapes.len() + i, shape)?;
         }
-        let obstacle = make_item(shapes.len() + i, shape.clone(), RotationRange::None)?;
-        let c = centering(shape);
-        layout.place_item(&obstacle, DTransformation::new(0.0, (c.0, c.1)));
     }
     Some(layout)
 }
@@ -431,6 +561,7 @@ fn fill_enclosed_openings(
     out: &mut [Out],
     rng: &mut Xoshiro256PlusPlus,
     stop: &dyn Fn() -> bool,
+    on_layout: LayoutSink,
 ) {
     if stop() {
         return;
@@ -448,53 +579,16 @@ fn fill_enclosed_openings(
             .total_cmp(&shapes[a].as_ref().map_or(0., |s| s.area))
     }));
     let mut parents = vec![None; items.len()];
+    let mut nest = |host_idx, rings, out: &mut [Out], parents: &mut [Option<usize>]| {
+        nest_into(p, items, &shapes, &bed_holes, out, parents, host_idx, rings, rng, stop, on_layout)
+    };
 
     // Phase one: place larger rings before small fillers consume their parent opening.
     for &host_idx in &hosts {
-        if stop() {
+        if !nest(host_idx, true, out, &mut parents) {
             return;
         }
-        let host_pose = out[host_idx];
-        let target = host_pose.bed_idx;
-        let ancestors = opening_ancestors(host_idx, &parents);
-        if !hosts.iter().any(|&i| !items[i].fixed && out[i].bed_idx > target) {
-            continue;
-        }
-        for raw_opening in &items[host_idx].openings {
-            if stop() {
-                return;
-            }
-            let Some(local_opening) = to_spolygon(raw_opening) else { continue };
-            let opening = world_outline(&local_opening, host_pose.x, host_pose.y, host_pose.rotation);
-            let Some(mut layout) = opening_layout(
-                p, opening.clone(), host_idx, &ancestors, &shapes, &bed_holes, out, stop,
-            ) else { continue };
-            let mut candidates: Vec<_> = hosts.iter().copied()
-                .filter(|&i| i != host_idx && !items[i].fixed && out[i].bed_idx > target)
-                .filter(|&i| shapes[i].as_ref().is_some_and(|s| s.area <= opening.area))
-                .collect();
-            candidates.sort_by(|&a, &b| shapes[b].as_ref().unwrap().area
-                .total_cmp(&shapes[a].as_ref().unwrap().area));
-            for idx in candidates {
-                if stop() { return; }
-                if out[idx].bed_idx <= target { continue; }
-                let shape = shapes[idx].as_ref().unwrap();
-                let Some(item) = make_item(idx, shape.clone(), rotation_range(items[idx].allow_rotation)) else {
-                    continue;
-                };
-                let evaluator = LBFEvaluator::new(&layout, &item);
-                if let (Some((dt, SampleEval::Clear { .. })), _) =
-                    search_placement(&layout, &item, None, evaluator, LBF_SAMPLE_CONFIG, rng)
-                {
-                    let (x, y, rotation) = to_header_pose(dt, centering(shape));
-                    out[idx] = Out { bed_idx: target, x, y, rotation };
-                    parents[idx] = Some(host_idx);
-                    layout.place_item(&item, dt);
-                }
-            }
-        }
     }
-
     // Phase two: deepest nested openings get ordinary pieces before their ancestors.
     let mut fill_hosts = hosts;
     fill_hosts.sort_by_key(|&i| (
@@ -502,52 +596,88 @@ fn fill_enclosed_openings(
         std::cmp::Reverse(opening_ancestors(i, &parents).len()),
     ));
     for host_idx in fill_hosts {
-        if stop() { return; }
-        let host_pose = out[host_idx];
-        let target = host_pose.bed_idx;
-        if !items.iter().zip(out.iter())
-            .any(|(it, pose)| !it.fixed && it.openings.is_empty() && pose.bed_idx > target)
-        {
-            continue;
-        }
-        let ancestors = opening_ancestors(host_idx, &parents);
-        for raw_opening in &items[host_idx].openings {
-            if stop() { return; }
-            let Some(local_opening) = to_spolygon(raw_opening) else { continue };
-            let opening = world_outline(&local_opening, host_pose.x, host_pose.y, host_pose.rotation);
-            let Some(mut layout) = opening_layout(
-                p, opening.clone(), host_idx, &ancestors, &shapes, &bed_holes, out, stop,
-            ) else { continue };
-            let mut candidates: Vec<_> = items.iter().zip(out.iter()).enumerate()
-                .filter(|(_, (it, pose))| !it.fixed && it.openings.is_empty() && pose.bed_idx > target)
-                .filter(|(i, _)| shapes[*i].as_ref().is_some_and(|s| s.area <= opening.area))
-                .map(|(i, _)| i)
-                .collect();
-            candidates.sort_by(|&a, &b| shapes[a].as_ref().unwrap().area
-                .total_cmp(&shapes[b].as_ref().unwrap().area));
-            for idx in candidates {
-                if stop() { return; }
-                if out[idx].bed_idx <= target { continue; }
-                let shape = shapes[idx].as_ref().unwrap();
-                let Some(item) = make_item(idx, shape.clone(), rotation_range(items[idx].allow_rotation)) else {
-                    continue;
-                };
-                let evaluator = LBFEvaluator::new(&layout, &item);
-                if let (Some((dt, SampleEval::Clear { .. })), _) =
-                    search_placement(&layout, &item, None, evaluator, LBF_SAMPLE_CONFIG, rng)
-                {
-                    let (x, y, rotation) = to_header_pose(dt, centering(shape));
-                    out[idx] = Out { bed_idx: target, x, y, rotation };
-                    layout.place_item(&item, dt);
-                }
-            }
+        if !nest(host_idx, false, out, &mut parents) {
+            return;
         }
     }
 }
 
-/// Try to empty the last plate into earlier gaps without disturbing their occupants.
-/// Only continue with the preceding plate if the current one emptied, avoiding an
-/// expensive all-pairs search when the trailing plate still needs to exist.
+/// Moves items from later beds into `host_idx`'s openings: other rings, largest first,
+/// recording their parent, or ordinary pieces, smallest first. Free moves only: nesting
+/// never adds a filament to a bed. False if stopped.
+#[allow(clippy::too_many_arguments)]
+fn nest_into(
+    p: &Params,
+    items: &[ItemIn],
+    shapes: &[Option<SPolygon>],
+    bed_holes: &[SPolygon],
+    out: &mut [Out],
+    parents: &mut [Option<usize>],
+    host_idx: usize,
+    rings: bool,
+    rng: &mut Xoshiro256PlusPlus,
+    stop: &dyn Fn() -> bool,
+    on_layout: LayoutSink,
+) -> bool {
+    if stop() {
+        return false;
+    }
+    let host_pose = out[host_idx];
+    let target = host_pose.bed_idx;
+    let movable = |i: usize, out: &[Out]| {
+        !items[i].fixed && items[i].openings.is_empty() != rings && out[i].bed_idx > target
+    };
+    if !(0..items.len()).any(|i| movable(i, out)) {
+        return true;
+    }
+    let ancestors = opening_ancestors(host_idx, parents);
+    let area = |i: usize| shapes[i].as_ref().unwrap().area;
+    for raw_opening in &items[host_idx].openings {
+        if stop() { return false; }
+        let Some(local_opening) = to_spolygon(raw_opening) else { continue };
+        let opening = world_outline(&local_opening, host_pose.x, host_pose.y, host_pose.rotation);
+        let Some(mut layout) = opening_layout(
+            p, opening.clone(), host_idx, &ancestors, items, shapes, bed_holes, out, stop,
+        ) else { continue };
+        let target_mask = bed_mask(items, out, target);
+        let mut candidates: Vec<usize> = (0..items.len())
+            .filter(|&i| i != host_idx && movable(i, out))
+            .filter(|&i| p.filaments.join(target_mask, items[i].filaments) == Some(false))
+            .filter(|&i| shapes[i].as_ref().is_some_and(|s| s.area <= opening.area))
+            .collect();
+        candidates.sort_by(|&a, &b| if rings {
+            area(b).total_cmp(&area(a)).then(out[a].bed_idx.cmp(&out[b].bed_idx))
+        } else {
+            area(a).total_cmp(&area(b))
+        });
+        for idx in candidates {
+            if stop() { return false; }
+            if out[idx].bed_idx <= target { continue; }
+            let shape = shapes[idx].as_ref().unwrap();
+            let Some(item) = make_item(idx, shape.clone(), rotation_range(items[idx].allow_rotation)) else {
+                continue;
+            };
+            let evaluator = LBFEvaluator::new(&layout, &item);
+            if let (Some((dt, SampleEval::Clear { .. })), _) =
+                search_placement(&layout, &item, None, evaluator, LBF_SAMPLE_CONFIG, rng)
+            {
+                let (x, y, rotation) = to_header_pose(dt, shape);
+                out[idx] = Out { bed_idx: target, x, y, rotation };
+                if rings {
+                    parents[idx] = Some(host_idx);
+                }
+                layout.place_item(&item, dt);
+                on_layout(out);
+            }
+        }
+    }
+    true
+}
+
+/// Try to empty each filament set's last plate into earlier gaps without disturbing their
+/// occupants. Within a set, only continue with the preceding plate if the current one
+/// emptied, avoiding an expensive all-pairs search when the trailing plate still needs
+/// to exist.
 pub(crate) fn consolidate(
     p: &Params,
     holes: &[Vec<(f64, f64)>],
@@ -555,6 +685,7 @@ pub(crate) fn consolidate(
     out: &mut [Out],
     rng: &mut Xoshiro256PlusPlus,
     stop: &dyn Fn() -> bool,
+    on_layout: LayoutSink,
 ) {
     let last = items.iter().zip(out.iter()).filter(|(it, _)| !it.fixed)
         .map(|(_, pose)| pose.bed_idx).max().unwrap_or(0);
@@ -563,38 +694,82 @@ pub(crate) fn consolidate(
     }
     let shapes: Vec<_> = items.iter().map(|it| to_spolygon(&it.outline)).collect();
     let holes: Vec<_> = holes.iter().filter_map(|h| to_spolygon(h)).collect();
-    for source in (1..=last).rev() {
+    let mut source = last;
+    while source >= 1 {
+        // Moves that add a filament to their bed are only worth it if the source bed empties.
+        let mut adding: Vec<(usize, Out)> = Vec::new();
         for target in 0..source {
             if stop() {
                 break;
             }
-            let mut layout = holes.clone();
-            let mut candidates = Vec::new();
-            for (i, ((it, pose), shape)) in items.iter().zip(out.iter()).zip(&shapes).enumerate() {
-                let Some(shape) = shape else { continue };
-                if pose.bed_idx == target {
-                    layout.push(world_outline(shape, pose.x, pose.y, pose.rotation));
-                } else if !it.fixed && pose.bed_idx == source {
-                    candidates.push(Candidate {
-                        out_idx: i, shape: shape.clone(), allow_rotation: it.allow_rotation,
-                        centering: centering(shape),
-                    });
-                }
-            }
-            if candidates.is_empty() {
+            // One filament set at a time, so each check sees what the previous one added.
+            let mut sets: Vec<u64> = items.iter().zip(out.iter())
+                .filter(|(it, pose)| !it.fixed && pose.bed_idx == source)
+                .map(|(it, _)| it.filaments)
+                .collect();
+            sets.sort_unstable();
+            sets.dedup();
+            if sets.is_empty() {
                 break;
             }
-            candidates.sort_by(|a, b| b.shape.area.total_cmp(&a.shape.area));
-            let indices: Vec<_> = (0..candidates.len()).collect();
-            let filled = gap_fill(&candidates, &indices, &layout, p.bed_w as f32, p.bed_h as f32, rng, stop);
-            for (i, dt) in filled {
-                let c = &candidates[i];
-                let (x, y, rotation) = to_header_pose(dt, c.centering);
-                out[c.out_idx] = Out { bed_idx: target, x, y, rotation };
+            for set in sets {
+                if stop() {
+                    break;
+                }
+                let target_mask = bed_mask(items, out, target);
+                let Some(adds) = p.filaments.join(target_mask, set) else { continue };
+                // The target's prime tower counts once it prints two filaments; a move that
+                // makes it do so first clears the tower's room, or skips the target.
+                let tower = (target_mask | set).count_ones() >= 2;
+                if tower && target_mask.count_ones() < 2
+                    && !make_room_for_towers(p, items, &shapes, &holes, out, target, rng, stop)
+                {
+                    continue;
+                }
+                let mut layout = holes.clone();
+                let mut candidates = Vec::new();
+                for (i, ((it, pose), shape)) in items.iter().zip(out.iter()).zip(&shapes).enumerate() {
+                    let Some(shape) = shape else { continue };
+                    if pose.bed_idx == target {
+                        if it.tower && !tower {
+                            continue;
+                        }
+                        layout.push(world_outline(shape, pose.x, pose.y, pose.rotation));
+                    } else if !it.fixed && pose.bed_idx == source && it.filaments == set {
+                        candidates.push(Candidate { out_idx: i, shape: shape.clone(), allow_rotation: it.allow_rotation });
+                    }
+                }
+                candidates.sort_by(|a, b| b.shape.area.total_cmp(&a.shape.area));
+                let indices: Vec<_> = (0..candidates.len()).collect();
+                let filled = gap_fill(&candidates, &indices, &layout, p.bed_w as f32, p.bed_h as f32, rng, stop);
+                for (i, dt) in filled {
+                    let c = &candidates[i];
+                    let (x, y, rotation) = to_header_pose(dt, &c.shape);
+                    if adds {
+                        adding.push((c.out_idx, out[c.out_idx]));
+                    }
+                    out[c.out_idx] = Out { bed_idx: target, x, y, rotation };
+                }
+                on_layout(out);
             }
         }
-        if stop() || out.iter().any(|pose| pose.bed_idx == source) {
+        // A prime tower left behind prints nothing on its own.
+        let emptied = !items.iter().zip(out.iter()).any(|(it, pose)| !it.tower && pose.bed_idx == source);
+        if !emptied && !adding.is_empty() {
+            // Taking items back to the bed they left can never collide.
+            for (idx, pose) in adding {
+                out[idx] = pose;
+            }
+            on_layout(out);
+        }
+        if stop() {
             break;
+        }
+        // A bed that stays ends its filament set's run: go on with the previous set's last bed.
+        let set = bed_mask(items, out, source);
+        source -= 1;
+        while !emptied && source >= 1 && bed_mask(items, out, source) == set {
+            source -= 1;
         }
     }
 }
@@ -607,12 +782,30 @@ fn world_outline(shape: &SPolygon, x: f64, y: f64, rotation: f64) -> SPolygon {
     w
 }
 
+/// A `w` x `h` bed with `obstacles` (bed coordinates) placed as fixed hazards, taking
+/// item ids from `first_id`.
+fn obstacle_layout(obstacles: &[SPolygon], w: f32, h: f32, first_id: usize) -> Option<Layout> {
+    let mut layout = Layout::new(Strip::new(h, CDE_CONFIG, NO_MODIFY, w).ok()?.into());
+    for (k, o) in obstacles.iter().enumerate() {
+        place_fixed(&mut layout, first_id + k, o)?;
+    }
+    Some(layout)
+}
+
+/// Places `shape`, already in layout coordinates, as an immovable hazard.
+fn place_fixed(layout: &mut Layout, id: usize, shape: &SPolygon) -> Option<()> {
+    let item = make_item(id, shape.clone(), RotationRange::None)?;
+    let c = shape.centroid();
+    layout.place_item(&item, DTransformation::new(0.0, (c.0, c.1)));
+    Some(())
+}
+
 /// Collision-free poses for as many of `leftover` (largest first) as LBF sampling can
-/// find among `layout`, each placement becoming an obstacle for the next.
+/// find among `obstacles`, each placement becoming an obstacle for the next.
 fn gap_fill(
     cands: &[Candidate],
     leftover: &[usize],
-    layout: &[SPolygon],
+    obstacles: &[SPolygon],
     bed_w: f32,
     bed_h: f32,
     rng: &mut Xoshiro256PlusPlus,
@@ -621,33 +814,20 @@ fn gap_fill(
     if leftover.is_empty() || stop() {
         return Vec::new();
     }
-    let mut item_vec = Vec::with_capacity(leftover.len() + layout.len());
-    for (k, &idx) in leftover.iter().enumerate() {
-        if stop() { return Vec::new(); }
-        let c = &cands[idx];
-        let Some(it) = make_item(k, c.shape.clone(), rotation_range(c.allow_rotation)) else { return Vec::new() };
-        item_vec.push(it);
-    }
-    for (k, o) in layout.iter().enumerate() {
-        if stop() { return Vec::new(); }
-        let Some(it) = make_item(leftover.len() + k, o.clone(), RotationRange::None) else { return Vec::new() };
-        item_vec.push(it);
-    }
-    let Ok(strip) = Strip::new(bed_h, CDE_CONFIG, NO_MODIFY, bed_w) else { return Vec::new() };
-    let instance = SPInstance::new(item_vec.iter().cloned().map(|i| (i, 1)).collect(), strip);
-    let mut prob = SPProblem::new(instance);
-    for (k, o) in layout.iter().enumerate() {
-        let c = centering(o);
-        prob.place_item(SPPlacement { item_id: leftover.len() + k, d_transf: DTransformation::new(0.0, (c.0, c.1)) });
-    }
+    let items: Option<Vec<Item>> = leftover.iter().enumerate()
+        .map(|(k, &idx)| make_item(k, cands[idx].shape.clone(), rotation_range(cands[idx].allow_rotation)))
+        .collect();
+    let (Some(items), Some(mut layout)) = (items, obstacle_layout(obstacles, bed_w, bed_h, leftover.len())) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
-    for (k, &idx) in leftover.iter().enumerate() {
+    for (item, &idx) in items.iter().zip(leftover) {
         if stop() { break; }
-        let evaluator = LBFEvaluator::new(&prob.layout, &item_vec[k]);
+        let evaluator = LBFEvaluator::new(&layout, item);
         if let (Some((dt, SampleEval::Clear { .. })), _) =
-            search_placement(&prob.layout, &item_vec[k], None, evaluator, LBF_SAMPLE_CONFIG, rng)
+            search_placement(&layout, item, None, evaluator, LBF_SAMPLE_CONFIG, rng)
         {
-            prob.place_item(SPPlacement { item_id: k, d_transf: dt });
+            layout.place_item(item, dt);
             out.push((idx, dt));
         }
     }
@@ -664,7 +844,7 @@ fn pack_bed(
     budget_s: f64,
     rng: &mut Xoshiro256PlusPlus,
     stop: &dyn Fn() -> bool,
-    report: &dyn Fn(usize),
+    report: &dyn Fn(&[(usize, DTransformation)]),
 ) -> (Vec<(usize, DTransformation)>, Vec<usize>) {
     let n_movable = cands.len();
     let all_leftover = || (Vec::new(), (0..n_movable).collect::<Vec<_>>());
@@ -693,7 +873,7 @@ fn pack_bed(
 
     // Obstacles are in bed coordinates; placing them at their centring offset restores them.
     for (k, o) in obstacles.iter().enumerate() {
-        let c = centering(o);
+        let c = o.centroid();
         prob.place_item(SPPlacement {
             item_id: n_movable + k,
             d_transf: DTransformation::new(0.0, (c.0, c.1)),
@@ -752,14 +932,17 @@ fn pack_bed(
     // Give the first feasible layout a full observation window. The existing
     // per-bed budget always wins when it is shorter than this patience period.
     let patience = Duration::from_secs_f64((budget_s / 4.0).clamp(0.25, 1.0));
-    let mut fill_progress = FillProgress::new(Instant::now(), patience);
+    // Area of the last layout that gained at least 1%, and when: small gains accumulate
+    // against it rather than restarting the patience period for every tiny addition.
+    let mut gain: Option<(f32, Instant)> = None;
 
     loop {
         let now = Instant::now();
-        if fill_progress.deadline().is_some_and(|deadline| now >= deadline) {
+        let plateau = gain.map(|(_, at)| at + patience);
+        if plateau.is_some_and(|deadline| now >= deadline) {
             break;
         }
-        let search_deadline = fill_progress.deadline().unwrap_or(bed_deadline).min(bed_deadline);
+        let search_deadline = plateau.unwrap_or(bed_deadline).min(bed_deadline);
         let slice_end = (now + slice).min(search_deadline);
         let term = Deadline { until: slice_end, stop };
         let (sol, cts) = sep.separate(&term, &mut listener);
@@ -775,11 +958,11 @@ fn pack_bed(
             let area: f32 = placed.iter().map(|(i, _)| cands[*i].shape.area).sum();
             let rank = (placed.len(), area);
             if rank > best_rank {
-                if rank.0 > best_rank.0 {
-                    report(rank.0);
-                }
+                report(&placed);
                 best_rank = rank;
-                fill_progress.observe(area, Instant::now());
+                if area > 0.0 && gain.is_none_or(|(a, _)| area >= a * 1.01) {
+                    gain = Some((area, Instant::now()));
+                }
                 best = Some((placed, leftover));
             }
             // Feasible with time to spare: try to fit one more.
@@ -889,55 +1072,4 @@ fn harvest(sep: &Separator, n_movable: usize) -> (Vec<(usize, DTransformation)>,
     }
     let leftover = (0..n_movable).filter(|i| !seen[*i]).collect();
     (placed, leftover)
-}
-
-#[cfg(test)]
-mod fill_progress_tests {
-    use super::*;
-
-    #[test]
-    fn no_plateau_deadline_without_a_nonempty_feasible_layout() {
-        let now = Instant::now();
-        let mut progress = FillProgress::new(now, Duration::from_secs(1));
-        for area in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-            progress.observe(area, now);
-            assert!(progress.deadline().is_none());
-        }
-    }
-
-    #[test]
-    fn flat_or_worse_fill_does_not_extend_search() {
-        let now = Instant::now();
-        let window = Duration::from_secs(1);
-        let mut progress = FillProgress::new(now, window);
-        progress.observe(100.0, now);
-        progress.observe(100.0, now + Duration::from_millis(400));
-        progress.observe(90.0, now + Duration::from_millis(800));
-        assert_eq!(progress.deadline(), Some(now + window));
-    }
-
-    #[test]
-    fn small_gains_accumulate_but_do_not_individually_reset_patience() {
-        let now = Instant::now();
-        let mut progress = FillProgress::new(now, Duration::from_secs(1));
-        progress.observe(100.0, now);
-        progress.observe(100.4, now + Duration::from_millis(400));
-        progress.observe(100.8, now + Duration::from_millis(800));
-        assert_eq!(progress.deadline(), Some(now + Duration::from_secs(1)));
-        progress.observe(101.2, now + Duration::from_millis(900));
-        assert_eq!(progress.deadline(), Some(now + Duration::from_millis(1900)));
-    }
-
-    #[test]
-    fn improvement_is_relative_to_fill_not_absolute_area() {
-        let now = Instant::now();
-        for scale in [0.1, 1.0, 1000.0] {
-            let mut progress = FillProgress::new(now, Duration::from_secs(1));
-            progress.observe(100.0 * scale, now);
-            progress.observe(100.5 * scale, now + Duration::from_millis(300));
-            assert_eq!(progress.deadline(), Some(now + Duration::from_secs(1)));
-            progress.observe(102.0 * scale, now + Duration::from_millis(800));
-            assert_eq!(progress.deadline(), Some(now + Duration::from_millis(1800)));
-        }
-    }
 }

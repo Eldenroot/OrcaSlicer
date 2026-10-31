@@ -8,6 +8,8 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
 #include <chrono>
+#include <cmath>
+#include <vector>
 
 using namespace Slic3r;
 using namespace Slic3r::arrangement;
@@ -129,6 +131,96 @@ TEST_CASE("Arrange rescues near-bed-size parts", "[arrange][sparrow]")
     REQUIRE(items[0].bed_idx == 0);
     const auto placed = items[0].transformed_poly();
     REQUIRE(diff(Polygons{placed.contour}, Polygons{bed.polygon()}).empty());
+}
+
+TEST_CASE("Stock finishes what sparrow leaves out, around sparrow's layout", "[arrange][sparrow]")
+{
+    if (!sparrow_available())
+        return;
+    // At full spacing a 255 mm part does not fit sparrow's 256 mm bed; stock's near-bed-size
+    // rescue reduces the spacing and places it. A 300 mm part fits nowhere.
+    ArrangePolygons items{part(rectangle(0, 0, 20, 20), 0), part(rectangle(0, 0, 20, 20), 1), part(rectangle(0, 0, 255, 255), 2),
+                          part(rectangle(0, 0, 300, 300), 3)};
+    for (auto &ap : items)
+        ap.bed_idx = UNARRANGED;
+    auto params = settings();
+    params.sparrow_only = true;
+    arrange(items, bed, params);
+    for (size_t i = 0; i < 3; ++i) {
+        INFO("item " << i);
+        REQUIRE(items[i].is_arranged());
+    }
+    REQUIRE(items[3].bed_idx == UNARRANGED);
+    REQUIRE(items[2].bed_idx != items[0].bed_idx);
+    REQUIRE(items[2].itemid == 2); // stock renumbers its own items; keep the caller's
+    const auto placed = items[2].transformed_poly();
+    REQUIRE(diff(Polygons{placed.contour}, Polygons{bed.polygon()}).empty());
+}
+
+TEST_CASE("A prime tower placeholder takes room only on multi-filament plates", "[arrange][sparrow]")
+{
+    if (!sparrow_available())
+        return;
+    // The placeholder leaves a 70 mm strip on plate 0, too small for the part.
+    ArrangePolygon tower = part(rectangle(0, 0, 256, 186), 9);
+    tower.is_virt_object = tower.is_wipe_tower = true;
+    auto plate_of = [&](std::vector<int> filaments, bool always) {
+        ArrangePolygons items{part(rectangle(0, 0, 100, 100), 0)};
+        items[0].extrude_ids = filaments;
+        items[0].bed_idx = UNARRANGED;
+        auto params = settings();
+        params.sparrow_only = true;
+        params.prime_tower_always = always;
+        arrange(items, ArrangePolygons{tower}, bed, params);
+        return items[0].bed_idx;
+    };
+    REQUIRE(plate_of({1}, false) == 0);
+    REQUIRE(plate_of({1, 2}, false) == 1);
+    REQUIRE(plate_of({1}, true) == 1); // smooth timelapse prints a tower everywhere
+}
+
+TEST_CASE("Sparrow-only arrange leaves items untouched when sparrow declines", "[arrange][sparrow]")
+{
+    // Filament ids beyond the 64 the masks hold: sparrow declines.
+    ArrangePolygons items{part(rectangle(0, 0, 20, 20), 0), part(rectangle(0, 0, 20, 20), 1)};
+    items[0].extrude_ids = {65};
+    items[1].translation = Vec2crd(scale_(50.), 0);
+    const ArrangePolygons before = items;
+    auto params = settings();
+    params.sparrow_only = true;
+    arrange(items, bed, params);
+    for (size_t i = 0; i < items.size(); ++i) {
+        REQUIRE(items[i].bed_idx == before[i].bed_idx);
+        REQUIRE(items[i].translation == before[i].translation);
+    }
+}
+
+TEST_CASE("Simplified outlines keep the full spacing", "[arrange][sparrow]")
+{
+    if (!sparrow_available())
+        return;
+    // A fine circle, like an outline at mesh resolution.
+    Polygon circle;
+    for (int i = 0; i < 720; ++i) {
+        const double a = 2. * PI * i / 720;
+        circle.points.emplace_back(scale_(20. * std::cos(a)), scale_(20. * std::sin(a)));
+    }
+    ArrangePolygons items;
+    for (int i = 0; i < 20; ++i) {
+        items.push_back(part(circle, i));
+        items.back().inflation = scale_(1.5);
+    }
+    arrange(items, bed, settings());
+    for (size_t i = 0; i < items.size(); ++i) {
+        REQUIRE(items[i].is_arranged());
+        for (size_t j = i + 1; j < items.size(); ++j)
+            if (items[i].bed_idx == items[j].bed_idx) {
+                // 1.5 mm each side, less float slack in the placements.
+                const Polygons a = offset(items[i].transformed_poly().contour, float(scale_(1.49)));
+                const Polygons b = offset(items[j].transformed_poly().contour, float(scale_(1.49)));
+                REQUIRE(intersection(a, b).empty());
+            }
+    }
 }
 
 TEST_CASE("Arrange preserves material separation", "[arrange][sparrow]")

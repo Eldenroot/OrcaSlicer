@@ -1255,12 +1255,55 @@ void arrange(ArrangePolygons &      arrangables,
     // print, belt printers and "one material per plate" also stay on libnest2d.
     if (params.use_sparrow && !params.is_seq_print && !params.is_belt && params.allow_multi_materials_on_same_plate) {
         if constexpr (std::is_same_v<BedT, BoundingBox>) {
-            if (arrange_sparrow(arrangables, excludes, bed, params))
+            if (arrange_sparrow(arrangables, excludes, bed, params)) {
+                // sparrow_only returns partial results: stock places what sparrow left out, on
+                // plates after sparrow's (whose gaps sparrow's cleanup already tried). Its
+                // near-bed-size rescue places parts sparrow's sampling rarely fits. Only the
+                // placeholders of those plates go along, rebased: stock stops opening plates
+                // once the last holds only fixed parts.
+                ArrangePolygons rest, placeholders;
+                std::vector<size_t> rest_src;
+                int next_bed = 0;
+                for (const ArrangePolygon &ap : excludes)
+                    if (!ap.is_virt_object)
+                        next_bed = std::max(next_bed, ap.bed_idx + 1);
+                for (size_t i = 0; i < arrangables.size(); ++i) {
+                    if (arrangables[i].bed_idx == UNARRANGED) {
+                        rest.push_back(arrangables[i]);
+                        rest.back().bed_idx = 0; // stock skips UNARRANGED items
+                        rest_src.push_back(i);
+                    } else if (!arrangables[i].is_virt_object)
+                        next_bed = std::max(next_bed, arrangables[i].bed_idx + 1);
+                }
+                if (rest.empty() || (params.stopcondition && params.stopcondition()))
+                    return;
+                auto rebase = [&](const ArrangePolygon &ap) {
+                    if (ap.is_virt_object && ap.bed_idx >= next_bed) {
+                        placeholders.push_back(ap);
+                        placeholders.back().bed_idx -= next_bed;
+                    }
+                };
+                std::for_each(excludes.begin(), excludes.end(), rebase);
+                std::for_each(arrangables.begin(), arrangables.end(), rebase); // pinned prime towers
+                ArrangeParams stock = params;
+                stock.use_sparrow   = false;
+                arrange(rest, placeholders, bed, stock);
+                for (size_t k = 0; k < rest.size(); ++k) {
+                    if (rest[k].bed_idx >= 0)
+                        rest[k].bed_idx += next_bed;
+                    if (rest[k].bed_idx >= MAX_NUM_PLATES)
+                        rest[k].bed_idx = UNARRANGED;
+                    rest[k].itemid = arrangables[rest_src[k]].itemid; // stock renumbers from 0
+                    arrangables[rest_src[k]] = rest[k];
+                }
                 return;
+            }
             BOOST_LOG_TRIVIAL(warning) << "sparrow arrange unavailable, using libnest2d";
         } else {
             BOOST_LOG_TRIVIAL(warning) << "sparrow arrange needs a rectangular bed, using libnest2d";
         }
+        if (params.sparrow_only)
+            return;
     }
 #endif
 

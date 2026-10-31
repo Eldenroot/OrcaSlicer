@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstdint>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -30,6 +32,10 @@ namespace {
 
 // process_arrangeable() clamps inflation up to this; match it so spacing is identical.
 const coord_t SPARROW_MIN_SEPARATION = scale_(1.0);
+
+// Outlines arrive at mesh resolution, and sparrow's cost grows with the vertex count.
+// Simplifying within this tolerance cuts it 3-28x for at most this much extra margin.
+const coord_t SPARROW_SIMPLIFY_TOLERANCE = scale_(0.05);
 
 // Key used to recognize the same exclusion polygon replicated across beds.
 std::string poly_key(const Polygon &p)
@@ -95,6 +101,21 @@ bool inflate_expolygon(const ExPolygon &src, coord_t infl, ExPolygon &out)
     return true;
 }
 
+// Replaces `inflated` (src inflated by infl) with a simplified outline that still contains
+// it: inflate by the tolerance as well, then simplify within it. Douglas-Peucker deviates
+// at most the tolerance, so the result cannot cut into `inflated`; the diff confirms it.
+bool simplify_inflated(const ExPolygon &src, coord_t infl, ExPolygon &inflated)
+{
+    ExPolygon wider;
+    if (!inflate_expolygon(src, infl + SPARROW_SIMPLIFY_TOLERANCE, wider))
+        return false;
+    ExPolygons simple = wider.simplify(double(SPARROW_SIMPLIFY_TOLERANCE));
+    if (simple.size() != 1 || simple.front().contour.points.size() < 3 || !diff_ex(ExPolygons{inflated}, simple).empty())
+        return false;
+    inflated = std::move(simple.front());
+    return true;
+}
+
 struct SparrowShapeStorage
 {
     std::vector<sp_point>              outline;
@@ -141,6 +162,12 @@ struct SparrowCallbackCtx
     std::chrono::steady_clock::time_point bed_start, last_tick;
     std::string message;
 
+    // For the live layout callback.
+    const ArrangeParams *    params      = nullptr;
+    const ArrangePolygons *  arrangables = nullptr;
+    const std::vector<size_t> *movable_src = nullptr; // sparrow's movable items -> arrangables
+    Point                    bed_min;
+
     void tick()
     {
         if (!fraction || last_bed < 0)
@@ -174,7 +201,7 @@ void sparrow_on_progress_cb(void *user, int bed_idx, int placed, int total)
     // A bed start repeats the previous placed count; only report real changes.
     if (bed_idx == ctx->last_bed && placed == ctx->last_placed)
         return;
-    if (bed_idx != ctx->last_bed) {
+    if (bed_idx >= 0 && bed_idx != ctx->last_bed) {
         // Completed plates provide a better estimate than the initial area bound.
         const double remaining = bed_idx > 0 && placed > 0
             ? std::ceil(double(total - placed) * bed_idx / placed)
@@ -186,8 +213,9 @@ void sparrow_on_progress_cb(void *user, int bed_idx, int placed, int total)
     ctx->last_placed = placed;
 
     // The GUI shows _L("Arranging") + " " + str, so emit only the suffix.
-    std::string msg = (boost::format(L("plate %1%, %2%/%3% objects placed"))
-                       % (bed_idx + 1) % placed % total).str();
+    // bed_idx is -1 once the final cleanup starts.
+    std::string msg = bed_idx < 0 ? std::string(L("final cleanup")) :
+        (boost::format(L("plate %1%, %2%/%3% objects placed")) % (bed_idx + 1) % placed % total).str();
     BOOST_LOG_TRIVIAL(debug) << "sparrow: progress st=" << placed << " " << msg;
     // progressind takes the count done, so pass placed.
     ctx->message = msg;
@@ -195,6 +223,23 @@ void sparrow_on_progress_cb(void *user, int bed_idx, int placed, int total)
         (*ctx->progressind)(unsigned(placed), msg);
     if (ctx->fraction)
         (*ctx->fraction)(ctx->progress.observe(total > 0 ? 0.99 * placed / total : 0.), msg);
+}
+
+// Runs on the worker thread whenever sparrow's layout improves.
+void sparrow_on_layout_cb(void *user, const sp_placement *layout, size_t)
+{
+    const auto *ctx = static_cast<SparrowCallbackCtx *>(user);
+    if (ctx == nullptr || ctx->params == nullptr || !ctx->params->on_layout)
+        return;
+    std::vector<ArrangeParams::Pose> poses;
+    poses.reserve(ctx->arrangables->size());
+    for (const ArrangePolygon &ap : *ctx->arrangables)
+        poses.push_back({ap.bed_idx, ap.translation, ap.rotation});
+    for (size_t k = 0; k < ctx->movable_src->size(); ++k)
+        poses[(*ctx->movable_src)[k]] = {layout[k].bed_idx,
+                                         {scaled<coord_t>(layout[k].x) + ctx->bed_min.x(), scaled<coord_t>(layout[k].y) + ctx->bed_min.y()},
+                                         layout[k].rotation};
+    ctx->params->on_layout(poses);
 }
 
 } // namespace
@@ -246,11 +291,27 @@ bool arrange_sparrow(ArrangePolygons &      arrangables,
     std::vector<SparrowShapeStorage> shape_store;
     shape_store.reserve(arrangables.size() + excludes.size());
 
+    // Filaments per item, as a mask over 0-based filament indices. Sparrow packs each
+    // filament set onto beds of its own and applies the sharing rules set below.
+    bool filaments_fit_mask = true;
+    auto filament_mask = [&](const ArrangePolygon &ap) {
+        uint64_t mask = 0;
+        for (int id : ap.extrude_ids) {
+            if (id < 1 || id > 64) {
+                filaments_fit_mask = false;
+                continue;
+            }
+            mask |= uint64_t(1) << (id - 1);
+        }
+        return mask;
+    };
+
     auto store_shape = [&](const ArrangePolygon &ap, coord_t infl, const Point &origin,
                            sp_item &it, double *area_mm2 = nullptr) -> bool {
         ExPolygon expanded;
         if (!inflate_expolygon(ap.poly, infl, expanded))
             return false;
+        simplify_inflated(ap.poly, infl, expanded); // keeps the full outline if it cannot
         shape_store.emplace_back();
         SparrowShapeStorage &storage = shape_store.back();
         storage.outline = to_sp_points(expanded.contour, origin);
@@ -272,8 +333,16 @@ bool arrange_sparrow(ArrangePolygons &      arrangables,
     };
 
     // ---- movable items -----------------------------------------------------
+    // An existing prime tower stays where it is on its own plate; it is pinned with the
+    // fixed items below, after the movable ones.
+    std::vector<const ArrangePolygon *> towers;
+    bool have_filament_info = false;
     for (size_t i = 0; i < arrangables.size(); ++i) {
         const ArrangePolygon &ap = arrangables[i];
+        if (ap.is_virt_object && ap.is_wipe_tower) {
+            towers.push_back(&ap);
+            continue;
+        }
         sp_item it{};
         double area_mm2 = 0.;
         if (!store_shape(ap, std::max(ap.inflation, SPARROW_MIN_SEPARATION), Point(0, 0), it, &area_mm2))
@@ -286,6 +355,8 @@ bool arrange_sparrow(ArrangePolygons &      arrangables,
         it.rotation       = ap.rotation;
         // allowed_rotations is never populated and libnest2d ignores it too.
         it.allow_rotation = params.allow_rotations ? 1 : 0;
+        it.filaments      = filament_mask(ap);
+        have_filament_info |= it.filaments != 0;
         items.push_back(it);
         movable_src.push_back(i);
     }
@@ -301,7 +372,8 @@ bool arrange_sparrow(ArrangePolygons &      arrangables,
     std::map<std::string, std::set<int>> virt_beds;
     for (size_t i = 0; i < excludes.size(); ++i) {
         const ArrangePolygon &ap = excludes[i];
-        if (!ap.is_virt_object || ap.bed_idx < 0)
+        // Prime towers stay per bed: sparrow reserves one only where its bed prints 2+ filaments.
+        if (!ap.is_virt_object || ap.bed_idx < 0 || (ap.is_wipe_tower && !params.prime_tower_always))
             continue;
         virt_world[i] = world_contour(ap);
         virt_keys[i]  = poly_key(virt_world[i]);
@@ -331,33 +403,43 @@ bool arrange_sparrow(ArrangePolygons &      arrangables,
         holes.push_back(sp_polygon{pt_store.back().data(), pt_store.back().size()});
     };
 
-    for (size_t i = 0; i < excludes.size(); ++i) {
-        const ArrangePolygon &ap = excludes[i];
-        if (ap.bed_idx < 0)
-            continue;
-        // Callers may supply a zero-height/width rectangle when no wipe tower
-        // is needed. It occupies no area and must not become an invalid hazard
-        // that disables the conservative opening cleanup.
-        if (ap.is_virt_object && ap.is_wipe_tower) {
-            const auto size = ap.poly.contour.bounding_box().size();
-            if (size.x() == 0 || size.y() == 0)
-                continue;
-        }
-        const coord_t infl = fixed_inflation(ap);
-        if (ap.is_virt_object && hole_keys.count(virt_keys[i])) {
-            add_hole(virt_world[i], virt_keys[i], infl);
-            continue;
-        }
+    // Without filament data on the movable items every plate counts as printing a prime tower,
+    // as before: the tower is then an obstacle everywhere.
+    const bool tower_per_bed = have_filament_info && !params.prime_tower_always;
+    auto add_fixed = [&](const ArrangePolygon &ap, coord_t infl) {
         sp_item it{};
         if (!store_shape(ap, infl, Point(0, 0), it))
-            continue;
+            return;
         it.fixed          = 1;
         it.bed_idx        = ap.bed_idx;
         it.x              = unscaled<double>(ap.translation.x() - bed_min.x());
         it.y              = unscaled<double>(ap.translation.y() - bed_min.y());
         it.rotation       = ap.rotation;
         it.allow_rotation = 0;
+        it.filaments      = filament_mask(ap);
+        it.tower          = ap.is_virt_object && ap.is_wipe_tower && tower_per_bed;
         items.push_back(it);
+    };
+    // Callers may supply a zero-height/width rectangle when no wipe tower is needed. It
+    // occupies no area and must not become an invalid hazard that disables the
+    // conservative opening cleanup.
+    auto empty_tower = [](const ArrangePolygon &ap) {
+        const auto size = ap.poly.contour.bounding_box().size();
+        return ap.is_virt_object && ap.is_wipe_tower && (size.x() == 0 || size.y() == 0);
+    };
+    for (const ArrangePolygon *tower : towers)
+        if (tower->bed_idx >= 0 && !empty_tower(*tower))
+            add_fixed(*tower, fixed_inflation(*tower));
+    for (size_t i = 0; i < excludes.size(); ++i) {
+        const ArrangePolygon &ap = excludes[i];
+        if (ap.bed_idx < 0 || empty_tower(ap))
+            continue;
+        const coord_t infl = fixed_inflation(ap);
+        if (ap.is_virt_object && hole_keys.count(virt_keys[i])) {
+            add_hole(virt_world[i], virt_keys[i], infl);
+            continue;
+        }
+        add_fixed(ap, infl);
     }
 
     // excluded_regions apply to every bed, matching libnest2d's m_excluded_items.
@@ -394,7 +476,20 @@ bool arrange_sparrow(ArrangePolygons &      arrangables,
     in.time_limit_s = params.sparrow_time_limit_s;
     in.seed         = 0;
 
+    // Filaments beyond the 64 the mask holds need the stock arranger. Incompatible filaments
+    // never get here: the check at the top hands them to the stock arranger.
+    if (!filaments_fit_mask) {
+        BOOST_LOG_TRIVIAL(info) << "sparrow: filament ids beyond 64 require the stock arranger";
+        return false;
+    }
+    in.allow_mixing          = params.allow_multi_materials_on_same_plate ? 1 : 0;
+    in.max_filaments_per_bed = params.sparrow_max_filaments_per_plate;
+
     SparrowCallbackCtx cb_ctx;
+    cb_ctx.params      = &params;
+    cb_ctx.arrangables = &arrangables;
+    cb_ctx.movable_src = &movable_src;
+    cb_ctx.bed_min     = bed_min;
     if (params.stopcondition) cb_ctx.stopcondition = &params.stopcondition;
     if (params.progressind)   cb_ctx.progressind   = &params.progressind;
     if (params.progress_fraction) cb_ctx.fraction = &params.progress_fraction;
@@ -403,6 +498,7 @@ bool arrange_sparrow(ArrangePolygons &      arrangables,
     in.user        = &cb_ctx;
     in.should_stop = params.stopcondition || params.progress_fraction ? &sparrow_should_stop_cb : nullptr;
     in.on_progress = params.progressind || params.progress_fraction ? &sparrow_on_progress_cb : nullptr;
+    in.on_layout   = params.on_layout ? &sparrow_on_layout_cb : nullptr;
 
     std::vector<sp_placement> out(items.size());
 
@@ -418,12 +514,18 @@ bool arrange_sparrow(ArrangePolygons &      arrangables,
         return false;
     }
 
-    // The stock arranger can reduce bed-edge inflation for near-bed-size parts.
-    // Retry the entire input before committing any poses if Sparrow could not
-    // place everything. Never restart a cancelled search.
-    if (!(params.stopcondition && params.stopcondition()) &&
-        std::any_of(out.begin(), out.begin() + n_movable,
-                    [](const sp_placement &p) { return p.bed_idx == UNARRANGED; })) {
+    std::set<int> used_beds;
+    for (size_t k = 0; k < n_movable; ++k)
+        used_beds.insert(out[k].bed_idx);
+    used_beds.erase(UNARRANGED);
+    const size_t unplaced = std::count_if(out.begin(), out.begin() + n_movable, [](const sp_placement &p) { return p.bed_idx == UNARRANGED; });
+    BOOST_LOG_TRIVIAL(info) << "sparrow: placed " << n_movable - unplaced << " of " << n_movable << " on " << used_beds.size() << " plates";
+
+    // The stock arranger can reduce bed-edge inflation for near-bed-size parts. Unless
+    // sparrow_only, retry the entire input before committing any poses if Sparrow could not
+    // place everything (arrange() otherwise has it finish the rest). Never restart a
+    // cancelled search.
+    if (!params.sparrow_only && unplaced > 0 && !(params.stopcondition && params.stopcondition())) {
         BOOST_LOG_TRIVIAL(info) << "sparrow: unplaced objects require a stock arrange retry";
         return false;
     }

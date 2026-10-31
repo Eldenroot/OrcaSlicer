@@ -12,7 +12,6 @@ jagua-rs = "0.8.0"
 sparrow = { path = "vendor/sparrow" }
 rand = "0.10"
 log = "0.4"
-serde_json = "1.0"
 
 [profile.release]
 opt-level = 3

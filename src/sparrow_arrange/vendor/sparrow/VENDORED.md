@@ -11,3 +11,7 @@ anyhow, getrandom).
 
 Local changes are marked `SPARROW_ARRANGE PATCH`: pinned obstacles in the collision tracker,
 item eviction on the separator, and terminator polling inside the separation loop.
+
+Upstream fixes backported since (marked `Backported from upstream`): ce4a382 (#161, unbounded
+collision evaluation after loss overflow) and 9ef4567 (#159, sampler accepts exact-fit ranges).
+Not taken: the jagua-rs 1.x migration (#164, #177), which changes the API this crate builds on.

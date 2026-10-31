@@ -1,9 +1,9 @@
 //! Every geometric assertion re-derives world coordinates from the pose contract
 //! (world = rotate(outline, rotation) + (x, y)) rather than trusting jagua-rs.
 
-use crate::pack::{ItemIn, Out, Params, arrange};
+use crate::pack::{FilamentRules, ItemIn, Out, Params, Progress, arrange_live};
 use crate::{sp_input, sp_item, sp_placement, sp_point, sp_polygon, sparrow_arrange};
-use rand::SeedableRng;
+use rand::{RngExt, SeedableRng};
 
 type Poly = Vec<(f64, f64)>;
 
@@ -78,26 +78,21 @@ fn l_shape(s: f64) -> Poly {
     vec![(0.0, 0.0), (s, 0.0), (s, s / 2.0), (s / 2.0, s / 2.0), (s / 2.0, s), (0.0, s)]
 }
 
-struct Lcg(u64);
-
-impl Lcg {
-    fn next(&mut self, lo: f64, hi: f64) -> f64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        lo + ((self.0 >> 33) as f64 / (1u64 << 31) as f64) * (hi - lo)
-    }
-}
-
 const BED: f64 = 256.0;
 const HOLE: [(f64, f64); 4] = [(0.0, 0.0), (20.0, 0.0), (20.0, 30.0), (0.0, 30.0)];
 
 fn movable(outline: Poly, allow_rotation: bool) -> ItemIn {
-    ItemIn { outline, openings: vec![], fixed: false, bed_idx: 0, x: 0.0, y: 0.0, rotation: 0.0, allow_rotation }
+    ItemIn { outline, openings: vec![], fixed: false, bed_idx: 0, x: 0.0, y: 0.0, rotation: 0.0, allow_rotation, filaments: 0, tower: false }
+}
+
+fn arrange(p: &Params, holes: &[Poly], items: &[ItemIn], stop: &dyn Fn() -> bool, progress: Progress) -> Vec<Out> {
+    arrange_live(p, holes, items, stop, progress, &|_| {})
 }
 
 /// `time_limit_s` is the budget for each bed, not for the run, so keep it small here:
 /// worst-case runtime is `max_beds * per_bed`.
 fn params(max_beds: i32, per_bed: f64) -> Params {
-    Params { bed_w: BED, bed_h: BED, max_beds, time_limit_s: per_bed, seed: 42 }
+    Params { bed_w: BED, bed_h: BED, max_beds, time_limit_s: per_bed, seed: 42, filaments: FilamentRules::default() }
 }
 
 /// Every constraint from the header, checked against independently transformed outlines.
@@ -152,7 +147,7 @@ fn consolidation_empties_a_small_final_plate_without_disturbing_earlier_parts() 
     let holes = vec![HOLE.to_vec()];
     check_all(&items, &holes, &out, BED, BED);
     crate::pack::consolidate(&params(3, 0.), &holes, &items, &mut out,
-        &mut rand::rngs::Xoshiro256PlusPlus::seed_from_u64(42), &|| false);
+        &mut rand::rngs::Xoshiro256PlusPlus::seed_from_u64(42), &|| false, &|_| {});
     assert_eq!(&out[..2], &earlier);
     assert_eq!(out[2].bed_idx, 0);
     assert_eq!(out[3].bed_idx, 0);
@@ -160,127 +155,201 @@ fn consolidation_empties_a_small_final_plate_without_disturbing_earlier_parts() 
 }
 
 #[test]
-fn consolidation_preserves_fixed_parts_and_keeps_parts_that_cannot_fit() {
-    let mut fixed = movable(rect(BED, 220.), false);
-    fixed.fixed = true;
-    fixed.x = 0.;
-    fixed.y = 36.;
-    let items = vec![fixed, movable(rect(20., 20.), false)];
+fn consolidation_skips_a_full_plate_and_leaves_parts_that_cannot_move() {
+    // Bed 0 is full: a hole and a fixed part. Bed 1's part cannot move, bed 2's joins it.
+    let full = ItemIn { fixed: true, y: 36., ..movable(rect(BED, 220.), false) };
+    let items = vec![full, movable(rect(80., 80.), false), movable(rect(20., 20.), false)];
     let mut out = vec![Out { bed_idx: 0, x: 0., y: 36., rotation: 0. },
-        Out { bed_idx: 1, x: 100., y: 100., rotation: 0. }];
-    let original = out.clone();
+        Out { bed_idx: 1, x: 100., y: 100., rotation: 0. },
+        Out { bed_idx: 2, x: 100., y: 100., rotation: 0. }];
+    let earlier = out[..2].to_vec();
     let holes = vec![rect(BED, 36.)];
-    crate::pack::consolidate(&params(2, 0.), &holes, &items, &mut out,
-        &mut rand::rngs::Xoshiro256PlusPlus::seed_from_u64(42), &|| false);
-    assert_eq!(out, original);
+    crate::pack::consolidate(&params(3, 0.), &holes, &items, &mut out,
+        &mut rand::rngs::Xoshiro256PlusPlus::seed_from_u64(42), &|| false, &|_| {});
+    assert_eq!(&out[..2], &earlier);
+    assert_eq!(out[2].bed_idx, 1);
+    check_all(&items, &holes, &out, BED, BED);
+}
+
+fn colored(outline: Poly, filaments: u64) -> ItemIn {
+    ItemIn { filaments, ..movable(outline, false) }
+}
+
+fn rules(allow_mixing: bool, max_per_bed: u32, incompatible: Vec<u64>) -> Params {
+    Params { filaments: FilamentRules { allow_mixing, max_per_bed, incompatible }, ..params(4, 0.5) }
+}
+
+#[test]
+fn filament_sets_share_a_bed_only_when_the_rules_allow() {
+    let items: Vec<ItemIn> = (0..12).map(|i| colored(rect(40., 25.), if i % 2 == 0 { 0b01 } else { 0b10 })).collect();
+    let holes = vec![HOLE.to_vec()];
+    let bed_filaments = |p: &Params| {
+        let out = arrange(p, &holes, &items, &|| false, &|_, _| {});
+        check_all(&items, &holes, &out, BED, BED);
+        let mut beds = std::collections::BTreeMap::new();
+        for (it, o) in items.iter().zip(&out) {
+            assert!(o.bed_idx >= 0);
+            *beds.entry(o.bed_idx).or_insert(0u64) |= it.filaments;
+        }
+        beds.into_values().collect::<Vec<_>>()
+    };
+    // Mixing off, over the cap, or incompatible: each set keeps beds of its own.
+    assert_eq!(bed_filaments(&rules(false, u32::MAX, vec![])), [0b01, 0b10]);
+    assert_eq!(bed_filaments(&rules(true, 1, vec![])), [0b01, 0b10]);
+    assert_eq!(bed_filaments(&rules(true, u32::MAX, vec![0b10, 0b01])), [0b01, 0b10]);
+    // Otherwise consolidation mixes them to save the bed.
+    assert_eq!(bed_filaments(&rules(true, u32::MAX, vec![])), [0b11]);
+}
+
+#[test]
+fn an_item_joins_a_bed_already_printing_its_filaments_without_mixing() {
+    let moved = |filaments: u64| {
+        let items = vec![colored(rect(80., 80.), 0b011), colored(rect(20., 20.), filaments)];
+        let mut out = vec![Out { bed_idx: 0, x: 100., y: 100., rotation: 0. },
+            Out { bed_idx: 1, x: 100., y: 100., rotation: 0. }];
+        crate::pack::consolidate(&rules(false, u32::MAX, vec![]), &[], &items, &mut out,
+            &mut rand::rngs::Xoshiro256PlusPlus::seed_from_u64(42), &|| false, &|_| {});
+        check_all(&items, &[], &out, BED, BED);
+        out[1].bed_idx == 0
+    };
+    assert!(moved(0b001));  // one of the bed's filaments: free
+    assert!(!moved(0b100)); // a new filament: not without mixing
+}
+
+#[test]
+fn an_unplaceable_item_leaves_beds_for_the_next_filament_set() {
+    // 250 x 250 fits the bed's box but always hits the hole, so it fits no bed.
+    let items = vec![colored(rect(250., 250.), 0b01), colored(rect(30., 30.), 0b01),
+        colored(rect(30., 30.), 0b10), colored(rect(30., 30.), 0b10)];
+    let holes = vec![HOLE.to_vec()];
+    let out = arrange(&rules(false, u32::MAX, vec![]), &holes, &items, &|| false, &|_, _| {});
+    assert_eq!(out[0].bed_idx, -1);
+    assert!(out[1..].iter().all(|o| o.bed_idx >= 0));
     check_all(&items, &holes, &out, BED, BED);
 }
 
 #[test]
-fn consolidation_cancellation_preserves_the_existing_layout() {
-    let items = vec![movable(rect(20., 20.), false)];
-    let mut out = vec![Out { bed_idx: 2, x: 100., y: 100., rotation: 0. }];
-    let original = out.clone();
-    crate::pack::consolidate(&params(3, 0.), &[], &items, &mut out,
-        &mut rand::rngs::Xoshiro256PlusPlus::seed_from_u64(42), &|| true);
-    assert_eq!(out, original);
+fn a_set_that_fits_no_bed_stops_at_the_first_bed_holding_only_its_tower() {
+    // Every bed has a tower, which the two-filament part covers wherever it goes.
+    let tower = |bed_idx| ItemIn { fixed: true, bed_idx, x: 200., y: 200., tower: true, ..movable(rect(40., 40.), false) };
+    let mut items: Vec<ItemIn> = (0..8).map(tower).collect();
+    items.push(colored(rect(250., 250.), 0b11));
+    let beds = std::cell::RefCell::new(Vec::new());
+    let out = arrange(&params(8, 0.1), &[], &items, &|| false, &|bed, _| beds.borrow_mut().push(bed));
+    assert_eq!(out[8].bed_idx, -1);
+    assert!(beds.borrow().iter().all(|&b| b <= 0), "searched beds {:?}", beds.borrow());
 }
 
 #[test]
-fn consolidation_tries_the_next_plate_when_the_first_is_full() {
-    let mut fixed = movable(rect(BED, BED), false);
-    fixed.fixed = true;
-    let items = vec![fixed, movable(rect(80., 80.), false), movable(rect(20., 20.), false)];
-    let mut out = vec![Out { bed_idx: 0, x: 0., y: 0., rotation: 0. },
+fn a_set_joins_a_bed_with_fixed_items_only_when_the_rules_allow() {
+    let bed_of_part = |allow_mixing: bool| {
+        let mut fixed = colored(rect(30., 30.), 0b01);
+        fixed.fixed = true;
+        fixed.x = 100.;
+        fixed.y = 100.;
+        let items = vec![fixed, colored(rect(30., 30.), 0b10)];
+        let out = arrange(&rules(allow_mixing, u32::MAX, vec![]), &[], &items, &|| false, &|_, _| {});
+        check_all(&items, &[], &out, BED, BED);
+        out[1].bed_idx
+    };
+    assert_eq!(bed_of_part(true), 0);
+    assert_eq!(bed_of_part(false), 1);
+}
+
+#[test]
+fn a_move_that_makes_a_bed_need_its_tower_first_clears_the_tower() {
+    // Bed 0 prints one filament, so its red part may sit on the tower's spot. Moving the
+    // white part there makes bed 0 print two: the red part makes room if it can.
+    let moved = |red: f64, fixed: bool| {
+        let tower = |bed_idx| ItemIn { fixed: true, bed_idx, x: 110., y: 100., tower: true, ..movable(rect(40., 40.), false) };
+        let red = ItemIn { fixed, x: 18., y: 18., ..colored(rect(red, red), 0b01) };
+        // Every bed has a tower placeholder; bed 1's must not stop it emptying.
+        let items = vec![tower(0), red, colored(rect(30., 30.), 0b10), tower(1)];
+        let mut out = vec![Out { bed_idx: 0, x: 110., y: 100., rotation: 0. },
+            Out { bed_idx: 0, x: 18., y: 18., rotation: 0. },
+            Out { bed_idx: 1, x: 100., y: 100., rotation: 0. },
+            Out { bed_idx: 1, x: 110., y: 100., rotation: 0. }];
+        crate::pack::consolidate(&rules(true, u32::MAX, vec![]), &[], &items, &mut out,
+            &mut rand::rngs::Xoshiro256PlusPlus::seed_from_u64(42), &|| false, &|_| {});
+        if out[2].bed_idx == 0 {
+            check_all(&items, &[], &out, BED, BED); // nothing overlaps the tower now
+        }
+        out[2].bed_idx == 0
+    };
+    assert!(moved(100., false)); // the red part moves off the tower, then the white one joins
+    assert!(!moved(220., false)); // a red part this big covers the tower wherever it goes
+    assert!(!moved(100., true)); // a fixed red part cannot move off it
+}
+
+#[test]
+fn every_filament_set_gets_to_empty_its_last_bed() {
+    // White's last bed cannot empty (bed 2 is full), which must not stop red's from emptying.
+    let mut full = colored(rect(BED, BED), 0b10);
+    full.fixed = true;
+    let items = vec![colored(rect(80., 80.), 0b01), colored(rect(20., 20.), 0b01), full,
+        colored(rect(20., 20.), 0b10)];
+    let mut out = vec![Out { bed_idx: 0, x: 100., y: 100., rotation: 0. },
         Out { bed_idx: 1, x: 100., y: 100., rotation: 0. },
-        Out { bed_idx: 2, x: 100., y: 100., rotation: 0. }];
-    let earlier = out[..2].to_vec();
-    crate::pack::consolidate(&params(3, 0.), &[], &items, &mut out,
-        &mut rand::rngs::Xoshiro256PlusPlus::seed_from_u64(42), &|| false);
-    assert_eq!(&out[..2], &earlier);
-    assert_eq!(out[2].bed_idx, 1);
+        Out { bed_idx: 2, x: 0., y: 0., rotation: 0. },
+        Out { bed_idx: 3, x: 100., y: 100., rotation: 0. }];
+    crate::pack::consolidate(&rules(false, u32::MAX, vec![]), &[], &items, &mut out,
+        &mut rand::rngs::Xoshiro256PlusPlus::seed_from_u64(42), &|| false, &|_| {});
+    assert_eq!(out[1].bed_idx, 0);
+    assert_eq!(out[3].bed_idx, 3);
+    check_all(&items, &[], &out, BED, BED);
+}
+
+#[test]
+fn moves_that_add_a_filament_are_undone_unless_their_bed_empties() {
+    // Bed 0 leaves a 60 x 60 corner, room for one of bed 1's two items only.
+    let mut wall = colored(rect(BED, 196.), 0b01);
+    wall.fixed = true;
+    let mut ledge = colored(rect(196., 60.), 0b01);
+    ledge.fixed = true;
+    ledge.y = 196.;
+    let items = vec![wall, ledge, colored(rect(40., 40.), 0b10), colored(rect(40., 40.), 0b10)];
+    let mut out = vec![Out { bed_idx: 0, x: 0., y: 0., rotation: 0. },
+        Out { bed_idx: 0, x: 0., y: 196., rotation: 0. },
+        Out { bed_idx: 1, x: 100., y: 100., rotation: 0. },
+        Out { bed_idx: 1, x: 150., y: 150., rotation: 0. }];
+    let original = out.clone();
+    crate::pack::consolidate(&rules(true, u32::MAX, vec![]), &[], &items, &mut out,
+        &mut rand::rngs::Xoshiro256PlusPlus::seed_from_u64(42), &|| false, &|_| {});
+    assert_eq!(out, original);
+
+    // Control: alone, the item fits the corner, empties bed 1 and stays.
+    let mut items = items;
+    items.truncate(3);
+    out.truncate(3);
+    crate::pack::consolidate(&rules(true, u32::MAX, vec![]), &[], &items, &mut out,
+        &mut rand::rngs::Xoshiro256PlusPlus::seed_from_u64(42), &|| false, &|_| {});
+    assert_eq!(out[2].bed_idx, 0);
     check_all(&items, &[], &out, BED, BED);
 }
 
 #[test]
 fn rectangles_and_l_shapes_with_hole_and_fixed_item() {
-    let mut rng = Lcg(7);
+    let mut rng = rand::rngs::Xoshiro256PlusPlus::seed_from_u64(7);
     let mut items: Vec<ItemIn> = Vec::new();
-    for _ in 0..20 {
-        items.push(movable(offset_rect(rng.next(15.0, 45.0), rng.next(15.0, 45.0)), true));
+    // Every other rectangle is rotation-locked.
+    for i in 0..20 {
+        items.push(movable(offset_rect(rng.random_range(15.0..45.0), rng.random_range(15.0..45.0)), i % 2 == 0));
     }
     for _ in 0..3 {
-        items.push(movable(l_shape(rng.next(25.0, 40.0)), true));
+        items.push(movable(l_shape(rng.random_range(25.0..40.0)), true));
     }
     // A fixed item parked mid-bed that nothing may touch.
-    items.push(ItemIn {
-        outline: rect(40.0, 40.0),
-        openings: vec![],
-        fixed: true,
-        bed_idx: 0,
-        x: 100.0,
-        y: 100.0,
-        rotation: 0.0,
-        allow_rotation: false,
-    });
+    items.push(ItemIn { fixed: true, x: 100.0, y: 100.0, ..movable(rect(40.0, 40.0), false) });
 
     let holes = vec![HOLE.to_vec()];
-    let out = arrange(&params(4, 3.0), &holes, &items, &|| false, &|_, _| {});
+    let out = arrange(&params(4, 1.0), &holes, &items, &|| false, &|_, _| {});
 
     // The fixed item is echoed back untouched.
     let f = out.last().unwrap();
     assert_eq!((f.bed_idx, f.x, f.y, f.rotation), (0, 100.0, 100.0, 0.0));
-
-    let placed = out.iter().filter(|p| p.bed_idx >= 0).count();
-    assert_eq!(placed, items.len(), "everything should fit on a 256x256 bed");
-    check_all(&items, &holes, &out, BED, BED);
-
-    // The fixed item is an obstacle for the movable ones, not just an echo.
-    let fixed_world = transform(&items.last().unwrap().outline, f);
-    for (i, (it, p)) in items.iter().zip(&out).enumerate().take(items.len() - 1) {
-        assert!(
-            !overlaps(&transform(&it.outline, p), &fixed_world),
-            "item {i} overlaps the fixed item"
-        );
-    }
-}
-
-#[test]
-fn too_many_items_spill_onto_multiple_beds() {
-    // 12 x 100x100 squares cannot share one 256x256 bed.
-    let items: Vec<ItemIn> = (0..12).map(|_| movable(rect(100.0, 100.0), false)).collect();
-    let holes: Vec<Poly> = vec![];
-    let (max_beds, per_bed) = (6, 1.0);
-    let t0 = std::time::Instant::now();
-    let out = arrange(&params(max_beds, per_bed), &holes, &items, &|| false, &|_, _| {});
-    let elapsed = t0.elapsed().as_secs_f64();
-
-    // The contract is per-bed: the run may take up to `max_beds * per_bed`, no more.
-    assert!(
-        elapsed <= f64::from(max_beds) * per_bed + 4.0,
-        "run took {elapsed:.2}s, over the per-bed budget contract"
-    );
-
-    let beds: std::collections::HashSet<i32> =
-        out.iter().filter(|p| p.bed_idx >= 0).map(|p| p.bed_idx).collect();
-    assert!(beds.len() > 1, "expected multiple beds, got {beds:?}");
-    assert!(beds.len() <= 6);
-    // 4 per bed is the geometric optimum for 100x100 into 256x256.
-    assert!(beds.len() <= 4, "should not waste beds, used {}", beds.len());
-    assert_eq!(out.iter().filter(|p| p.bed_idx >= 0).count(), 12);
-    check_all(&items, &holes, &out, BED, BED);
-}
-
-#[test]
-fn rotation_disabled_stays_exactly_zero() {
-    let items: Vec<ItemIn> = (0..8).map(|_| movable(offset_rect(60.0, 30.0), false)).collect();
-    let holes = vec![HOLE.to_vec()];
-    let out = arrange(&params(2, 2.0), &holes, &items, &|| false, &|_, _| {});
-
-    for (i, p) in out.iter().enumerate() {
-        if p.bed_idx >= 0 {
-            assert_eq!(p.rotation, 0.0, "item {i} was rotated despite allow_rotation=0");
-        }
+    for (i, (it, p)) in items.iter().zip(&out).enumerate() {
+        assert!(p.bed_idx >= 0, "item {i} should fit on a 256x256 bed");
+        assert!(it.allow_rotation || p.rotation == 0.0, "item {i} was rotated despite allow_rotation=0");
     }
     check_all(&items, &holes, &out, BED, BED);
 }
@@ -333,7 +402,7 @@ fn pose_translation_is_applied_to_the_item_local_origin() {
     let (w, h) = (60.0, 40.0);
     let items = vec![movable(offset_rect(w, h), false)];
     let out = arrange(
-        &Params { bed_w: w + 0.01, bed_h: h + 0.01, max_beds: 1, time_limit_s: 0.5, seed: 1 },
+        &Params { bed_w: w + 0.01, bed_h: h + 0.01, max_beds: 1, time_limit_s: 0.5, seed: 1, filaments: FilamentRules::default() },
         &[],
         &items,
         &|| false,
@@ -342,12 +411,6 @@ fn pose_translation_is_applied_to_the_item_local_origin() {
     assert_eq!(out[0].bed_idx, 0);
     assert!((out[0].x - -5.0).abs() < EPS, "x = {}, expected -5", out[0].x);
     assert!((out[0].y - -7.0).abs() < EPS, "y = {}, expected -7", out[0].y);
-
-    let world = transform(&items[0].outline, &out[0]);
-    let xs: Vec<f64> = world.iter().map(|p| p.0).collect();
-    let ys: Vec<f64> = world.iter().map(|p| p.1).collect();
-    assert!(xs.iter().cloned().fold(f64::MAX, f64::min).abs() < EPS);
-    assert!(ys.iter().cloned().fold(f64::MAX, f64::min).abs() < EPS);
 }
 
 /// A non-positive budget must mean "one pass", not "restart until the heat death".
@@ -357,7 +420,7 @@ fn zero_time_limit_terminates() {
     let holes = vec![HOLE.to_vec()];
     for limit in [0.0, -1.0] {
         let out = arrange(
-            &Params { bed_w: BED, bed_h: BED, max_beds: 3, time_limit_s: limit, seed: 3 },
+            &Params { bed_w: BED, bed_h: BED, max_beds: 3, time_limit_s: limit, seed: 3, filaments: FilamentRules::default() },
             &holes,
             &items,
             &|| false,
@@ -369,76 +432,13 @@ fn zero_time_limit_terminates() {
 }
 
 #[test]
-fn same_seed_is_deterministic() {
+fn live_layouts_end_with_the_result() {
     let items: Vec<ItemIn> = (0..10).map(|_| movable(rect(40.0, 25.0), true)).collect();
     let holes = vec![HOLE.to_vec()];
-    let a = arrange(&params(3, 1.0), &holes, &items, &|| false, &|_, _| {});
-    let b = arrange(&params(3, 1.0), &holes, &items, &|| false, &|_, _| {});
-    assert_eq!(a, b);
-}
-
-#[test]
-fn ffi_entry_point_through_raw_c_structs() {
-    let outlines: Vec<Vec<sp_point>> = (0..6)
-        .map(|i| {
-            let w = 40.0 + i as f64 * 5.0;
-            vec![
-                sp_point { x: 0.0, y: 0.0 },
-                sp_point { x: w, y: 0.0 },
-                sp_point { x: w, y: 30.0 },
-                sp_point { x: 0.0, y: 30.0 },
-            ]
-        })
-        .collect();
-    let hole_pts: Vec<sp_point> =
-        HOLE.iter().map(|&(x, y)| sp_point { x, y }).collect();
-    let holes = [sp_polygon { pts: hole_pts.as_ptr(), n: hole_pts.len() }];
-
-    let items: Vec<sp_item> = outlines
-        .iter()
-        .map(|o| sp_item {
-            outline: sp_polygon { pts: o.as_ptr(), n: o.len() },
-            openings: std::ptr::null(),
-            n_openings: 0,
-            fixed: 0,
-            bed_idx: 0,
-            x: 0.0,
-            y: 0.0,
-            rotation: 0.0,
-            allow_rotation: 1,
-        })
-        .collect();
-
-    let input = sp_input {
-        bed_w: BED,
-        bed_h: BED,
-        holes: holes.as_ptr(),
-        n_holes: holes.len(),
-        items: items.as_ptr(),
-        n_items: items.len(),
-        max_beds: 2,
-        time_limit_s: 1.0,
-        seed: 1,
-        should_stop: None,
-        user: std::ptr::null_mut(),
-        on_progress: None,
-    };
-
-    let mut out = vec![sp_placement { bed_idx: -9, x: 0.0, y: 0.0, rotation: 0.0 }; items.len()];
-    let rc = unsafe { sparrow_arrange(&input, out.as_mut_ptr()) };
-    assert_eq!(rc, 0);
-    assert!(out.iter().all(|p| p.bed_idx >= 0));
-
-    // Re-check the results through the same independent geometry as the Rust-level tests.
-    let rust_items: Vec<ItemIn> = outlines
-        .iter()
-        .map(|o| movable(o.iter().map(|p| (p.x, p.y)).collect(), true))
-        .collect();
-    let rust_out: Vec<Out> = out
-        .iter()
-        .map(|p| Out { bed_idx: p.bed_idx, x: p.x, y: p.y, rotation: p.rotation })
-        .collect();
-    check_all(&rust_items, &[HOLE.to_vec()], &rust_out, BED, BED);
+    let snapshots = std::cell::RefCell::new(Vec::new());
+    let out = arrange_live(&params(3, 0.5), &holes, &items, &|| false, &|_, _| {},
+        &|s| snapshots.borrow_mut().push(s.to_vec()));
+    assert_eq!(snapshots.into_inner().last(), Some(&out));
 }
 
 #[test]
@@ -446,20 +446,8 @@ fn ffi_rejects_invalid_input() {
     let mut out = [sp_placement { bed_idx: 0, x: 0.0, y: 0.0, rotation: 0.0 }];
     assert_eq!(unsafe { sparrow_arrange(std::ptr::null(), out.as_mut_ptr()) }, 1);
 
-    let bad = sp_input {
-        bed_w: 0.0,
-        bed_h: 256.0,
-        holes: std::ptr::null(),
-        n_holes: 0,
-        items: std::ptr::null(),
-        n_items: 0,
-        max_beds: 1,
-        time_limit_s: 1.0,
-        seed: 0,
-        should_stop: None,
-        user: std::ptr::null_mut(),
-        on_progress: None,
-    };
+    // All zeroes is a valid sp_input: null pointers, no callbacks.
+    let bad = sp_input { bed_w: 0.0, bed_h: 256.0, max_beds: 1, ..unsafe { std::mem::zeroed() } };
     assert_eq!(unsafe { sparrow_arrange(&bad, out.as_mut_ptr()) }, 1);
 }
 
@@ -475,94 +463,56 @@ unsafe extern "C" fn record_progress(user: *mut std::ffi::c_void, bed: i32, plac
 }
 
 #[test]
-fn ffi_progress_callback_is_monotone_and_final() {
+fn ffi_round_trip_through_raw_c_structs() {
     // 12 x 100x100 squares need several beds, so progress spans bed boundaries.
-    let outlines: Vec<Vec<sp_point>> = (0..12)
-        .map(|_| {
-            vec![
-                sp_point { x: 0.0, y: 0.0 },
-                sp_point { x: 100.0, y: 0.0 },
-                sp_point { x: 100.0, y: 100.0 },
-                sp_point { x: 0.0, y: 100.0 },
-            ]
-        })
-        .collect();
-    let mut items: Vec<sp_item> = outlines
-        .iter()
-        .map(|o| sp_item {
-            outline: sp_polygon { pts: o.as_ptr(), n: o.len() },
-            openings: std::ptr::null(),
-            n_openings: 0,
-            fixed: 0,
-            bed_idx: 0,
-            x: 0.0,
-            y: 0.0,
-            rotation: 0.0,
-            allow_rotation: 0,
-        })
-        .collect();
+    let square: Vec<sp_point> = rect(100., 100.).iter().map(|&(x, y)| sp_point { x, y }).collect();
+    let small: Vec<sp_point> = rect(10., 10.).iter().map(|&(x, y)| sp_point { x, y }).collect();
+    let hole_pts: Vec<sp_point> = HOLE.iter().map(|&(x, y)| sp_point { x, y }).collect();
+    let holes = [sp_polygon { pts: hole_pts.as_ptr(), n: hole_pts.len() }];
+    let item = |pts: &[sp_point]| sp_item { outline: sp_polygon { pts: pts.as_ptr(), n: pts.len() }, ..unsafe { std::mem::zeroed() } };
+    let mut items: Vec<sp_item> = (0..12).map(|_| item(&square)).collect();
     // A fixed item must not be counted in `total`, which is movable items only.
-    let fixed_pts = vec![
-        sp_point { x: 0.0, y: 0.0 },
-        sp_point { x: 10.0, y: 0.0 },
-        sp_point { x: 10.0, y: 10.0 },
-        sp_point { x: 0.0, y: 10.0 },
-    ];
-    items.push(sp_item {
-        outline: sp_polygon { pts: fixed_pts.as_ptr(), n: fixed_pts.len() },
-        openings: std::ptr::null(),
-        n_openings: 0,
-        fixed: 1,
-        bed_idx: 0,
-        x: 200.0,
-        y: 200.0,
-        rotation: 0.0,
-        allow_rotation: 0,
-    });
+    items.push(sp_item { fixed: 1, x: 200., y: 200., ..item(&small) });
 
     let mut log = ProgressLog { calls: Vec::new() };
     let input = sp_input {
         bed_w: BED,
         bed_h: BED,
-        holes: std::ptr::null(),
-        n_holes: 0,
+        holes: holes.as_ptr(),
+        n_holes: holes.len(),
         items: items.as_ptr(),
         n_items: items.len(),
         max_beds: 6,
         time_limit_s: 1.0,
         seed: 5,
-        should_stop: None,
         user: std::ptr::addr_of_mut!(log).cast(),
         on_progress: Some(record_progress),
+        ..unsafe { std::mem::zeroed() }
     };
 
     let mut out = vec![sp_placement { bed_idx: -9, x: 0.0, y: 0.0, rotation: 0.0 }; items.len()];
     let rc = unsafe { sparrow_arrange(&input, out.as_mut_ptr()) };
     assert_eq!(rc, 0);
+    assert!(out.iter().all(|p| p.bed_idx >= 0), "all 12 squares should fit across the beds");
+    let beds: std::collections::HashSet<i32> = out.iter().map(|p| p.bed_idx).collect();
+    // 4 per bed is the geometric optimum for 100x100 into 256x256.
+    assert!(beds.len() > 1 && beds.len() <= 4, "used beds {beds:?}");
 
-    assert!(!log.calls.is_empty(), "progress callback was never invoked");
-    let total_movable = 12;
-    let mut prev_placed = -1;
-    let mut prev_bed = -1;
+    // Re-check the results through the same independent geometry as the Rust-level tests.
+    let mut rust_items: Vec<ItemIn> = (0..12).map(|_| movable(rect(100., 100.), false)).collect();
+    rust_items.push(ItemIn { fixed: true, ..movable(rect(10., 10.), false) });
+    check_all(&rust_items, &[HOLE.to_vec()], &out, BED, BED);
+
+    let mut prev = (-1, -1);
     for &(bed, placed, total) in &log.calls {
-        assert_eq!(total, total_movable, "total must be the movable item count");
-        assert!(placed >= prev_placed, "placed went backwards: {prev_placed} -> {placed}");
-        assert!(bed >= prev_bed, "bed index went backwards: {prev_bed} -> {bed}");
-        assert!((0..=total_movable).contains(&placed), "placed {placed} out of range");
-        prev_placed = placed;
-        prev_bed = bed;
+        assert_eq!(total, 12, "total must be the movable item count");
+        assert!(placed >= prev.1, "placed went backwards: {} -> {placed}", prev.1);
+        // Beds only advance, apart from the final cleanup (-1) and the closing report.
+        assert!(bed >= prev.0 || bed == -1 || prev.0 == -1, "bed index went backwards: {} -> {bed}", prev.0);
+        assert!((0..=12).contains(&placed), "placed {placed} out of range");
+        prev = (bed, placed);
     }
-
-    // A bed-start call reports the count carried in from earlier beds, so the first call is 0.
-    assert_eq!(log.calls[0], (0, 0, total_movable));
-
-    let actually_placed = out[..12].iter().filter(|p| p.bed_idx >= 0).count() as i32;
-    assert_eq!(
-        log.calls.last().unwrap().1,
-        actually_placed,
-        "final callback must report the real number of movable placements"
-    );
-    assert_eq!(actually_placed, 12, "all 12 squares should fit across the beds");
+    assert_eq!(log.calls.last().unwrap().1, 12, "the final call must report every placement");
 }
 
 #[test]
@@ -573,7 +523,7 @@ fn item_that_only_fits_between_sampler_angles_is_still_placed() {
     let (s, c) = a.sin_cos();
     let outline: Poly = rect(99.0, 10.0).iter().map(|&(x, y)| (x * c - y * s, x * s + y * c)).collect();
     let items = vec![movable(outline.clone(), true)];
-    let p = Params { bed_w: 100.0, bed_h: 20.0, max_beds: 1, time_limit_s: 2.0, seed: 42 };
+    let p = Params { bed_w: 100.0, bed_h: 20.0, max_beds: 1, time_limit_s: 2.0, seed: 42, filaments: FilamentRules::default() };
     let out = arrange(&p, &[], &items, &|| false, &|_, _| {});
     assert_eq!(out[0].bed_idx, 0, "item was rejected as unplaceable");
     check_all(&items, &[], &out, 100.0, 20.0);

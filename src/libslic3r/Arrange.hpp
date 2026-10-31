@@ -143,6 +143,12 @@ struct ArrangeParams {
     bool  use_sparrow = false;
     /// Sparrow search budget in seconds, per plate (not for the whole run).
     float sparrow_time_limit_s = 8.f;
+    /// No libnest2d fallback: a failed sparrow run leaves the arrangables untouched.
+    bool  sparrow_only = false;
+    /// Most filaments sparrow may put on a plate by mixing filament sets; 0 = no limit.
+    int   sparrow_max_filaments_per_plate = 0;
+    /// Every plate prints a prime tower, not just multi-filament ones.
+    bool  prime_tower_always = false;
 
     bool do_final_align = true;
 
@@ -183,6 +189,11 @@ struct ArrangeParams {
     std::function<void(double, std::string)> progress_fraction;
 
     std::function<void(const ArrangePolygon &)> on_packed;
+
+    /// Sparrow only: the best layout so far, one pose per arrangable, called on the
+    /// arrange thread. Items not placed yet have bed_idx UNARRANGED.
+    struct Pose { int bed_idx; Vec2crd translation; double rotation; };
+    std::function<void(const std::vector<Pose> &)> on_layout;
 
     /// A predicate returning true if abort is needed.
     std::function<bool(void)>     stopcondition;

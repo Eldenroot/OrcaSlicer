@@ -21,9 +21,16 @@ typedef struct {
     size_t n_openings;
     int    fixed;         /* 1 = immovable, already placed on bed `bed_idx` at (x,y,rotation) */
     int    bed_idx;       /* fixed items: bed index (>=0). movable items: ignored on input */
-    double x, y, rotation;/* fixed items: pose. movable items: optional hint, may be ignored */
+    double x, y, rotation;/* fixed items: pose. movable items: ignored */
     int    allow_rotation;/* movable items: 1 = any rotation, 0 = rotation must stay 0 */
+    uint64_t filaments;   /* bit f set: prints with filament f. 0 = prints nothing */
+    int    tower;         /* fixed items: 1 = a prime tower, an obstacle only on a bed printing 2+ filaments */
 } sp_item;
+
+typedef struct {
+    int    bed_idx;                   /* -1 = could not be placed on any bed */
+    double x, y, rotation;
+} sp_placement;
 
 typedef struct {
     double bed_w, bed_h;              /* usable bed rectangle [0,bed_w] x [0,bed_h] */
@@ -39,15 +46,23 @@ typedef struct {
     int  (*should_stop)(void *user);  /* optional cancel poll, may be NULL */
     void  *user;
     /* optional progress callback, may be NULL. Called when a bed starts and each time
-     * an item is committed: bed_idx = current bed (0-based), placed = movable items
-     * placed so far across all beds, total = movable items. */
+     * an item is committed: bed_idx = current bed (0-based), or -1 once the final cleanup
+     * starts, placed = movable items placed so far across all beds, total = movable items. */
     void (*on_progress)(void *user, int bed_idx, int placed, int total);
+    /* optional, may be NULL: the best layout so far, n entries in input order, called
+     * from the calling thread whenever the search improves. Unplaced items have
+     * bed_idx -1. The buffer is only valid during the call. */
+    void (*on_layout)(void *user, const sp_placement *layout, size_t n);
+    /* Filament rules. Each filament set packs onto beds of its own; the cleanup passes
+     * may move an item onto a bed whose filaments already include its own, and, only if
+     * allow_mixing, add a filament to a bed when that empties the item's bed, keeps the
+     * bed at max_filaments_per_bed or fewer (0 = no limit) and respects incompatible:
+     * incompatible[f] = the filaments that cannot share a bed with filament f. */
+    int    allow_mixing;
+    int    max_filaments_per_bed;
+    const uint64_t *incompatible;
+    size_t n_incompatible;
 } sp_input;
-
-typedef struct {
-    int    bed_idx;                   /* -1 = could not be placed on any bed */
-    double x, y, rotation;
-} sp_placement;
 
 /* Items are pre-inflated by the caller (spacing is baked into outlines), so
  * touching-but-not-overlapping placements are valid.
