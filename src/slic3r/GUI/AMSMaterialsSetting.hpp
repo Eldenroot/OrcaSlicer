@@ -27,6 +27,7 @@
 #include "slic3r/GUI/Widgets/PopupWindow.hpp"
 #include "slic3r/GUI/Widgets/StaticBox.hpp"
 #include <wx/sizer.h>
+#include <wx/stattext.h>
 #include <wx/string.h>
 #include <string>
 #include "libslic3r/calib.hpp"

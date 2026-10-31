@@ -22,6 +22,8 @@
 #include <wx/anybutton.h>
 #include <wx/checklst.h>
 #include <wx/colour.h>
+#include <wx/defs.h>
+#include <wx/stattext.h>
 #include <wx/string.h>
 #include <vector>
 #include "slic3r/GUI/GUI_Utils.hpp"
